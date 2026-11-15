@@ -27,7 +27,9 @@ Dockerfile 里的 `corepack` 走不了 HTTP 代理，用临时副本构建，不
 
 Anthropic API Key 账号如果模型映射使用 `c/` 或 `s/` 短别名，或凭证里 `quota_source` 为 `zcode`，账号列表会请求该网关的 `GET /v1/orbiqo/quota`，并在用量列显示 Coding Plan 的 5 小时和每周窗口。
 
-OpenAI API Key 账号如果 Base URL 主机名以 `olx.` 开头，模型映射包含 `plan_pro`、`plan_max`、`lingxi-pro`、`lingxi-max`，或 `quota_source` 为 `lingxi`，同一列会显示灵犀智点的剩余和总额。
+OpenAI API Key 账号如果 Base URL 主机名以 `olx.` 开头，模型映射包含 `plan_pro`、`plan_max`、`lingxi-pro`、`lingxi-max`，或 `quota_source` 为 `lingxi`，同一列会用已用进度条显示灵犀智点，条后标注剩余/总额。
+
+OpenAI API Key 账号如果 Base URL 主机名以 `owkbd.` 开头，或模型映射包含 `hy4free`、`fast-model`、`space-bunny`，或 `quota_source` 为 `codebuddy`，同一列会用已用进度条分别显示 WorkBuddy 的套餐基础积分和平台奖励积分，条后标注剩余/总额和到期时间。
 
 ## nginx / 证书
 
