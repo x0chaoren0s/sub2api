@@ -48,6 +48,16 @@ func TestAccountUsesZcodeQuota(t *testing.T) {
 		Type:        AccountTypeAPIKey,
 		Credentials: map[string]any{"base_url": "https://api.openai.com/v1"},
 	}))
+	require.True(t, accountUsesCodebuddyQuota(&Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://owkbd.orbiqo.cc"},
+	}))
+	require.False(t, accountUsesCodebuddyQuota(&Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://olx.osaka.mangaharb.fun"},
+	}))
 }
 
 func TestZcodeQuotaURL(t *testing.T) {
