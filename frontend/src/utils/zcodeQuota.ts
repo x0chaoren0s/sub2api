@@ -32,5 +32,19 @@ export function isLingxiQuotaAccount(account: Pick<Account, 'platform' | 'type' 
 }
 
 export function isOrbiqoQuotaAccount(account: Pick<Account, 'platform' | 'type' | 'credentials'>): boolean {
-  return isZcodeQuotaAccount(account) || isLingxiQuotaAccount(account)
+  return isZcodeQuotaAccount(account) || isLingxiQuotaAccount(account) || isCodebuddyQuotaAccount(account)
+}
+
+const CODEBUDDY_MODEL_IDS = new Set(['hy4free', 'fast-model', 'space-bunny'])
+
+/** OpenAI API Key 账号指向 open-codebuddy-cn 时，拉取 WorkBuddy 积分。 */
+export function isCodebuddyQuotaAccount(account: Pick<Account, 'platform' | 'type' | 'credentials'>): boolean {
+  if (account.platform !== 'openai' || account.type !== 'apikey') return false
+  const credentials = account.credentials as Record<string, unknown> | undefined
+  if (!credentials) return false
+  if (credentials.quota_source === 'codebuddy') return true
+  if (typeof credentials.base_url === 'string' && /(?:^|\/\/)owkbd\./i.test(credentials.base_url)) return true
+  const mapping = credentials.model_mapping
+  if (!mapping || typeof mapping !== 'object') return false
+  return Object.keys(mapping as Record<string, unknown>).some((key) => CODEBUDDY_MODEL_IDS.has(key))
 }
