@@ -657,6 +657,59 @@
       </div>
     </template>
 
+    <template v-else-if="zcodeQuotaAccount">
+      <div v-if="loading && !usageInfo" class="space-y-1.5">
+        <div class="flex items-center gap-1">
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-1.5 w-8 animate-pulse rounded-full bg-gray-200 dark:bg-gray-700"></div>
+          <div class="h-3 w-[32px] animate-pulse rounded bg-gray-200 dark:bg-gray-700"></div>
+        </div>
+      </div>
+      <div v-else-if="error" class="text-xs text-red-500">{{ error }}</div>
+      <div v-else-if="usageInfo" class="space-y-1">
+        <div v-if="usageInfo.error" class="truncate text-xs text-amber-600 dark:text-amber-400 max-w-[200px]" :title="usageInfo.error">
+          {{ usageInfo.error }}
+        </div>
+        <UsageProgressBar
+          v-if="usageInfo.five_hour"
+          label="5h"
+          :utilization="usageInfo.five_hour.utilization"
+          :resets-at="usageInfo.five_hour.resets_at"
+          :window-stats="usageInfo.five_hour.window_stats"
+          :show-now-when-idle="true"
+          color="indigo"
+        />
+        <UsageProgressBar
+          v-if="usageInfo.seven_day"
+          label="7d"
+          :utilization="usageInfo.seven_day.utilization"
+          :resets-at="usageInfo.seven_day.resets_at"
+          :window-stats="usageInfo.seven_day.window_stats"
+          :show-now-when-idle="true"
+          color="emerald"
+        />
+        <div
+          v-for="balance in usageInfo.zcode_balances || []"
+          :key="balance.name"
+          class="text-[10px] text-gray-500 dark:text-gray-400"
+        >
+          {{ balance.name }}
+          <template v-if="balance.remaining != null && balance.total != null">
+            {{ balance.remaining }}/{{ balance.total }}
+          </template>
+        </div>
+        <button
+          type="button"
+          class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="activeQueryLoading || loading"
+          @click="loadActiveUsage"
+        >
+          {{ t('admin.accounts.usageWindow.activeQuery') }}
+        </button>
+      </div>
+      <div v-else class="text-xs text-gray-400">-</div>
+    </template>
+
     <!-- Other accounts: no usage window -->
     <template v-else>
       <div class="text-xs text-gray-400">-</div>
@@ -755,6 +808,7 @@ import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
 import { isOfficialGeminiBaseUrl } from '@/utils/geminiExplicitCache'
+import { isZcodeQuotaAccount } from '@/utils/zcodeQuota'
 import { supportsAccountQuota } from '@/utils/accountQuota'
 import UsageProgressBar from './UsageProgressBar.vue'
 import AccountQuotaInfo from './AccountQuotaInfo.vue'
@@ -838,6 +892,8 @@ const isGeminiVertex = computed(() => {
   return props.account.platform === 'gemini' && props.account.type === 'service_account'
 })
 
+const zcodeQuotaAccount = computed(() => isZcodeQuotaAccount(props.account))
+
 // Show usage windows for OAuth and Setup Token accounts
 const showUsageWindows = computed(() => {
   // Gemini: we can always compute local usage windows from DB logs (simulated quotas).
@@ -848,10 +904,12 @@ const showUsageWindows = computed(() => {
   if (isMultiProtocolApiKeyPlatform(props.account.platform)) {
     return true
   }
+  if (isZcodeQuotaAccount(props.account)) return true
   return props.account.type === 'oauth' || props.account.type === 'setup-token'
 })
 
 const shouldFetchUsage = computed(() => {
+  if (isZcodeQuotaAccount(props.account)) return true
   if (props.account.platform === 'anthropic') {
     return props.account.type === 'oauth' || props.account.type === 'setup-token'
   }

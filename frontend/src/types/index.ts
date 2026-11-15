@@ -1556,6 +1556,16 @@ export interface AccountUsageInfo {
   error_code?: string
 
   error?: string            // usage 获取失败时的错误信息
+
+  // zcode-provider /v1/orbiqo/quota
+  zcode_plan?: string
+  zcode_balances?: Array<{
+    name: string
+    remaining?: number | null
+    total?: number | null
+    used_percent?: number | null
+    resets_at?: string | null
+  }> | null
 }
 
 // OpenAI Codex usage snapshot (from response headers)
