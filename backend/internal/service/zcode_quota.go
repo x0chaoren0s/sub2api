@@ -55,6 +55,31 @@ func accountUsesZcodeQuota(account *Account) bool {
 	return false
 }
 
+func accountUsesOrbiqoQuota(account *Account) bool {
+	return accountUsesZcodeQuota(account) || accountUsesLingxiQuota(account)
+}
+
+func accountUsesLingxiQuota(account *Account) bool {
+	if account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(account.GetCredential("quota_source")), "lingxi") {
+		return true
+	}
+	baseURL := strings.ToLower(account.GetCredential("base_url"))
+	if strings.Contains(baseURL, "://olx.") || strings.Contains(baseURL, "://olx/") {
+		return true
+	}
+	mapping, _ := account.Credentials["model_mapping"].(map[string]any)
+	for key := range mapping {
+		switch key {
+		case "plan_pro", "plan_max", "lingxi-pro", "lingxi-max":
+			return true
+		}
+	}
+	return false
+}
+
 func zcodeModelAlias(value string) bool {
 	return strings.HasPrefix(value, "c/") || strings.HasPrefix(value, "s/")
 }

@@ -16,3 +16,21 @@ export function isZcodeQuotaAccount(account: Pick<Account, 'platform' | 'type' |
 function isZcodeModelAlias(value: string): boolean {
   return value.startsWith('c/') || value.startsWith('s/')
 }
+
+const LINGXI_MODEL_IDS = new Set(['plan_pro', 'plan_max', 'lingxi-pro', 'lingxi-max'])
+
+/** OpenAI API Key 账号指向 open-lingxi 时，拉取智点余额。 */
+export function isLingxiQuotaAccount(account: Pick<Account, 'platform' | 'type' | 'credentials'>): boolean {
+  if (account.platform !== 'openai' || account.type !== 'apikey') return false
+  const credentials = account.credentials as Record<string, unknown> | undefined
+  if (!credentials) return false
+  if (credentials.quota_source === 'lingxi') return true
+  if (typeof credentials.base_url === 'string' && /(?:^|\/\/)olx\./i.test(credentials.base_url)) return true
+  const mapping = credentials.model_mapping
+  if (!mapping || typeof mapping !== 'object') return false
+  return Object.keys(mapping as Record<string, unknown>).some((key) => LINGXI_MODEL_IDS.has(key))
+}
+
+export function isOrbiqoQuotaAccount(account: Pick<Account, 'platform' | 'type' | 'credentials'>): boolean {
+  return isZcodeQuotaAccount(account) || isLingxiQuotaAccount(account)
+}

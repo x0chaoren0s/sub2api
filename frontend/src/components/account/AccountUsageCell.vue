@@ -829,7 +829,7 @@ import { buildAccountUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber, formatDateTime } from '@/utils/format'
 import { isOfficialGeminiBaseUrl } from '@/utils/geminiExplicitCache'
-import { isZcodeQuotaAccount } from '@/utils/zcodeQuota'
+import { isOrbiqoQuotaAccount } from '@/utils/zcodeQuota'
 import { supportsAccountQuota } from '@/utils/accountQuota'
 import UsageProgressBar from './UsageProgressBar.vue'
 import AccountQuotaInfo from './AccountQuotaInfo.vue'
@@ -913,7 +913,7 @@ const isGeminiVertex = computed(() => {
   return props.account.platform === 'gemini' && props.account.type === 'service_account'
 })
 
-const zcodeQuotaAccount = computed(() => isZcodeQuotaAccount(props.account))
+const zcodeQuotaAccount = computed(() => isOrbiqoQuotaAccount(props.account))
 
 // Show usage windows for OAuth and Setup Token accounts
 const showUsageWindows = computed(() => {
@@ -925,12 +925,12 @@ const showUsageWindows = computed(() => {
   if (isMultiProtocolApiKeyPlatform(props.account.platform)) {
     return true
   }
-  if (isZcodeQuotaAccount(props.account)) return true
+  if (isOrbiqoQuotaAccount(props.account)) return true
   return props.account.type === 'oauth' || props.account.type === 'setup-token'
 })
 
 const shouldFetchUsage = computed(() => {
-  if (isZcodeQuotaAccount(props.account)) return true
+  if (isOrbiqoQuotaAccount(props.account)) return true
   if (props.account.platform === 'anthropic') {
     return props.account.type === 'oauth' || props.account.type === 'setup-token'
   }

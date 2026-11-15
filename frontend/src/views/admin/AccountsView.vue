@@ -521,7 +521,7 @@ import ScheduledTestsPanel from '@/components/admin/account/ScheduledTestsPanel.
 import type { SelectOption } from '@/components/common/Select.vue'
 import AccountStatusIndicator from '@/components/account/AccountStatusIndicator.vue'
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
-import { isZcodeQuotaAccount } from '@/utils/zcodeQuota'
+import { isOrbiqoQuotaAccount } from '@/utils/zcodeQuota'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
@@ -764,7 +764,7 @@ const buildDefaultTodayStats = (): WindowStats => ({
 })
 
 const accountSupportsBatchUsage = (account: Account) => {
-  if (isZcodeQuotaAccount(account)) return true
+  if (isOrbiqoQuotaAccount(account)) return true
   if (account.platform === 'anthropic') {
     return account.type === 'oauth' || account.type === 'setup-token'
   }
