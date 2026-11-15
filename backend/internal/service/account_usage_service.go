@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -271,6 +272,10 @@ type UsageInfo struct {
 
 	// 获取 usage 时的错误信息（降级返回，而非 500）
 	Error string `json:"error,omitempty"`
+
+	// zcode-provider 通过 /v1/orbiqo/quota 上报的套餐额度。
+	ZcodePlan     string              `json:"zcode_plan,omitempty"`
+	ZcodeBalances []ZcodeQuotaBalance `json:"zcode_balances,omitempty"`
 }
 
 // ClaudeUsageWindow Anthropic /api/oauth/usage 返回的单个用量窗口
@@ -340,6 +345,7 @@ type AccountUsageService struct {
 	cache                   *UsageCache
 	identityCache           IdentityCache
 	tlsFPProfileService     *TLSFingerprintProfileService
+	cfg                     *config.Config
 	agentIdentityTaskMu     sync.Mutex
 	agentIdentityWS         agentIdentityWSConnectionInvalidator
 }
@@ -357,6 +363,7 @@ func NewAccountUsageService(
 	cache *UsageCache,
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
+	cfg *config.Config,
 ) *AccountUsageService {
 	return &AccountUsageService{
 		accountRepo:             accountRepo,
@@ -369,6 +376,7 @@ func NewAccountUsageService(
 		openAIQuotaService:      openAIQuotaService,
 		cache:                   cache,
 		identityCache:           identityCache,
+		cfg:                     cfg,
 		tlsFPProfileService:     tlsFPProfileService,
 	}
 }
@@ -398,6 +406,17 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 	// passive snapshot that the account table loads on mount.
 	if account.IsSyntheticUITest() && account.IsAnthropicOAuthOrSetupToken() {
 		return s.getPassiveUsageForAccount(ctx, account)
+	}
+
+	if accountUsesZcodeQuota(account) {
+		usage, err := s.getZcodeQuotaUsage(ctx, account, forceProbe)
+		if err != nil {
+			return nil, err
+		}
+		if s.cache != nil {
+			s.addWindowStats(ctx, account, usage)
+		}
+		return usage, nil
 	}
 
 	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
