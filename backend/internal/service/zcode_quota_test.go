@@ -31,6 +31,23 @@ func TestAccountUsesZcodeQuota(t *testing.T) {
 		Type:        AccountTypeAPIKey,
 		Credentials: map[string]any{"model_mapping": map[string]any{"claude-sonnet": "claude-sonnet"}},
 	}))
+	require.True(t, accountUsesLingxiQuota(&Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://olx.osaka.mangaharb.fun"},
+	}))
+	require.True(t, accountUsesLingxiQuota(&Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"plan_pro": "pro"},
+		},
+	}))
+	require.False(t, accountUsesLingxiQuota(&Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://api.openai.com/v1"},
+	}))
 }
 
 func TestZcodeQuotaURL(t *testing.T) {

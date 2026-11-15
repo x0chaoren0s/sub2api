@@ -388,7 +388,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 		return s.getPassiveUsageForAccount(ctx, account)
 	}
 
-	if accountUsesZcodeQuota(account) {
+	if accountUsesOrbiqoQuota(account) {
 		usage, err := s.getZcodeQuotaUsage(ctx, account, forceProbe)
 		if err != nil {
 			return nil, err
