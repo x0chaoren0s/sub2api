@@ -688,16 +688,18 @@
           :show-now-when-idle="true"
           color="emerald"
         />
-        <div
-          v-for="balance in usageInfo.zcode_balances || []"
+        <UsageProgressBar
+          v-for="(balance, index) in usageInfo.zcode_balances || []"
           :key="balance.name"
-          class="text-[10px] text-gray-500 dark:text-gray-400"
-        >
-          {{ balance.name }}
-          <template v-if="balance.remaining != null && balance.total != null">
-            {{ balance.remaining }}/{{ balance.total }}
-          </template>
-        </div>
+          :label="balanceBarLabel(balance.name)"
+          :title="balanceBarTitle(balance)"
+          :utilization="balance.used_percent ?? 0"
+          :detail="balanceBarDetail(balance)"
+          :resets-at="balance.resets_at"
+          :color="balanceBarColors[index % balanceBarColors.length]"
+          label-width="auto"
+          :show-now-when-idle="true"
+        />
         <button
           type="button"
           class="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
@@ -893,6 +895,31 @@ const isGeminiVertex = computed(() => {
 })
 
 const zcodeQuotaAccount = computed(() => isOrbiqoQuotaAccount(props.account))
+
+const balanceBarColors = ['indigo', 'emerald', 'amber', 'purple'] as const
+
+function balanceBarLabel(name: string): string {
+  if (name.includes('基础')) return '基础'
+  if (name.includes('奖励')) return '奖励'
+  if (name.includes('智点')) return '智点'
+  return name.slice(0, 2)
+}
+
+function formatBalancePoint(value: number): string {
+  const rounded = Math.round(value * 100) / 100
+  if (Number.isInteger(rounded)) return String(rounded)
+  return rounded.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
+}
+
+function balanceBarDetail(balance: { remaining?: number | null; total?: number | null }): string {
+  if (balance.remaining == null || balance.total == null) return ''
+  return `${formatBalancePoint(balance.remaining)}/${formatBalancePoint(balance.total)}`
+}
+
+function balanceBarTitle(balance: { name: string; remaining?: number | null; total?: number | null }): string {
+  const detail = balanceBarDetail(balance)
+  return detail ? `${balance.name} ${detail}` : balance.name
+}
 
 // Show usage windows for OAuth and Setup Token accounts
 const showUsageWindows = computed(() => {

@@ -36,7 +36,7 @@
     <!-- Progress bar row -->
     <div class="flex items-center gap-1">
       <!-- Label badge (label-width: fixed = 定宽居中, auto = 限宽截断左对齐) -->
-      <span :class="[labelSizeClass, labelClass]">
+      <span :class="[labelSizeClass, labelClass]" :title="title || label">
         {{ label }}
       </span>
 
@@ -51,6 +51,15 @@
       <!-- Percentage -->
       <span :class="['w-[32px] shrink-0 text-right text-[10px] font-medium', textClass]">
         {{ displayPercent }}
+      </span>
+
+      <!-- Exact remaining/total, kept beside the used-percent bar -->
+      <span
+        v-if="detail"
+        class="shrink-0 text-[10px] tabular-nums text-gray-500 dark:text-gray-400"
+        :title="title || detail"
+      >
+        {{ detail }}
       </span>
 
       <!-- Reset time -->
@@ -78,6 +87,9 @@ const props = withDefaults(
     estimatedTotalCost?: number | null
     showNowWhenIdle?: boolean
     remainingCapacity?: boolean
+    title?: string
+    /** 进度条后的确切数值，例如剩余/总量 */
+    detail?: string
     /** fixed: 定宽居中徽章（账号页纵向对齐）；auto: 限宽截断左对齐（监控页组合标签） */
     labelWidth?: 'fixed' | 'auto'
   }>(),
