@@ -91,7 +91,7 @@ func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_APIKeyUsesResponsesI
 		Concurrency: 1,
 		Credentials: map[string]any{
 			"api_key":  "sk-test",
-			"base_url": "http://upstream.example",
+			"base_url": "https://api.openai.com",
 		},
 		Status:      StatusActive,
 		Schedulable: true,
@@ -102,11 +102,64 @@ func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_APIKeyUsesResponsesI
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, `{"input_tokens":42}`, rec.Body.String())
 	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, "http://upstream.example/v1/responses/input_tokens", upstream.lastReq.URL.String())
+	require.Equal(t, "https://api.openai.com/v1/responses/input_tokens", upstream.lastReq.URL.String())
 	require.Equal(t, "Bearer sk-test", upstream.lastReq.Header.Get("authorization"))
 	require.Equal(t, "gpt-5.3-codex", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.True(t, gjson.GetBytes(upstream.lastBody, "input").Exists())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
+}
+
+func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_CustomRelayCountsLocally(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"glm-5.3","system":"You are helpful.","messages":[{"role":"user","content":"hello world"}],"tools":[{"name":"Read","input_schema":{"type":"object","properties":{"file_path":{"type":"string"}}}}]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusNotFound,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"not found"}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID: 808, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "local-token", "base_url": "https://owkbd.orbiqo.cc"},
+	}
+	err := svc.ForwardCountTokensAsAnthropic(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Greater(t, gjson.GetBytes(rec.Body.Bytes(), "input_tokens").Int(), int64(1))
+	require.Nil(t, upstream.lastReq, "custom relay count_tokens must not call an unsupported upstream endpoint")
+}
+
+func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_CustomRelayMinimum(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"glm-5.3","messages":[]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://owkbd.orbiqo.cc"}}
+	require.NoError(t, svc.ForwardCountTokensAsAnthropic(context.Background(), c, account, body, ""))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"input_tokens":1}`, rec.Body.String())
+}
+
+func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_CustomRelayIgnoresOutputEffort(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, preference := range []string{`"thinking":{"type":"disabled"}`, `"output_config":{"effort":"none"}`} {
+		t.Run(preference, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			body := []byte(`{"model":"gpt-6.1-sol","messages":[{"role":"user","content":"hello"}],` + preference + `}`)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+			account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://custom.example"}}
+			require.NoError(t, svc.ForwardCountTokensAsAnthropic(context.Background(), c, account, body, ""))
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Greater(t, gjson.GetBytes(rec.Body.Bytes(), "input_tokens").Int(), int64(0))
+		})
+	}
 }
 
 func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_OAuthFallsBackWhenPlatformEndpointUnsupported(t *testing.T) {
