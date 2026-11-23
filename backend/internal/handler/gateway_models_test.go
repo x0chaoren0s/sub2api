@@ -161,11 +161,24 @@ func (s *gatewayModelsAccountRepoStub) ListByGroup(ctx context.Context, groupID 
 	return s.ListSchedulableByGroupID(ctx, groupID)
 }
 
-func (s *gatewayModelsAccountRepoStub) ListModelAvailabilityCandidates(ctx context.Context, groupID *int64, _ []string, _ bool) ([]service.Account, error) {
+func (s *gatewayModelsAccountRepoStub) ListModelAvailabilityCandidates(ctx context.Context, groupID *int64, platforms []string, _ bool) ([]service.Account, error) {
 	if groupID == nil {
 		return nil, nil
 	}
-	return s.ListSchedulableByGroupID(ctx, *groupID)
+	accounts, err := s.ListSchedulableByGroupID(ctx, *groupID)
+	if len(platforms) == 0 {
+		return accounts, err
+	}
+	filtered := make([]service.Account, 0, len(accounts))
+	for _, account := range accounts {
+		for _, platform := range platforms {
+			if account.Platform == platform {
+				filtered = append(filtered, account)
+				break
+			}
+		}
+	}
+	return filtered, err
 }
 
 func newGatewayModelsHandlerForTest(repo service.AccountRepository, routeRepo ...service.CompositeModelRouteRepository) *GatewayHandler {

@@ -355,7 +355,7 @@ func TestCountTokensEntries_ExplicitModelScope401OnlyCoolsModel(t *testing.T) {
 		svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream, rateLimitService: &RateLimitService{accountRepo: repo, cfg: cfg}}
 		account := newTempUnschedScope401Account(PlatformOpenAI, TempUnschedScopeModel)
 		account.Credentials["api_key"] = "sk-test"
-		account.Credentials["base_url"] = "http://upstream.example"
+		account.Credentials["base_url"] = "https://api.openai.com"
 		account.Concurrency = 1
 		body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}`)
 		c, _ := newContext("/v1/messages/count_tokens", body)

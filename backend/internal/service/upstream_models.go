@@ -42,6 +42,7 @@ type UpstreamModelMetadata struct {
 	InputModalities          []string                   `json:"input_modalities,omitempty"`
 	ContextWindow            int64                      `json:"context_window,omitempty"`
 	MaxContextWindow         int64                      `json:"max_context_window,omitempty"`
+	MaxInputTokens           int64                      `json:"max_input_tokens,omitempty"`
 	MaxOutputTokens          int64                      `json:"max_output_tokens,omitempty"`
 	CodexToolCapabilities    map[string]json.RawMessage `json:"codex_tool_capabilities,omitempty"`
 }
@@ -309,6 +310,22 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 	}
 
 	completeMetadata := completeUpstreamModelMetadataSubset(capabilityIDs, catalog.Metadata)
+	// Token limits are independently useful even when reasoning or modality
+	// metadata is unavailable. Persist just the known limits in that case.
+	for _, modelID := range capabilityIDs {
+		if _, complete := completeMetadata[modelID]; complete {
+			continue
+		}
+		entry := catalog.Metadata[modelID]
+		if entry.ContextWindow <= 0 && entry.MaxContextWindow <= 0 && entry.MaxInputTokens <= 0 && entry.MaxOutputTokens <= 0 {
+			continue
+		}
+		if completeMetadata == nil {
+			completeMetadata = make(map[string]UpstreamModelMetadata)
+		}
+		completeMetadata[modelID] = UpstreamModelMetadata{ID: modelID, ContextWindow: entry.ContextWindow,
+			MaxContextWindow: entry.MaxContextWindow, MaxInputTokens: entry.MaxInputTokens, MaxOutputTokens: entry.MaxOutputTokens}
+	}
 	persistedCapabilities := false
 	if len(completeMetadata) > 0 && account != nil && account.ID > 0 && s.accountRepo != nil {
 		// Retain known metadata only for models still listed or explicitly mapped.
@@ -326,6 +343,7 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 					continue
 				}
 				if entry, ok := completeMetadata[modelID]; ok {
+					entry, _ = mergeUpstreamModelMetadata(entry, old)
 					if entry.CodexToolCapabilities == nil {
 						entry.CodexToolCapabilities = make(map[string]json.RawMessage)
 					}
@@ -442,6 +460,7 @@ func upstreamModelMetadataIsUseful(metadata UpstreamModelMetadata) bool {
 		len(metadata.CodexToolCapabilities) > 0 ||
 		metadata.ContextWindow > 0 ||
 		metadata.MaxContextWindow > 0 ||
+		metadata.MaxInputTokens > 0 ||
 		metadata.MaxOutputTokens > 0
 }
 
@@ -530,6 +549,10 @@ func mergeUpstreamModelMetadata(primary, fallback UpstreamModelMetadata) (Upstre
 		if merged.MaxContextWindow <= 0 {
 			merged.MaxContextWindow = fallback.MaxContextWindow
 		}
+		changed = true
+	}
+	if merged.MaxInputTokens <= 0 && fallback.MaxInputTokens > 0 {
+		merged.MaxInputTokens = fallback.MaxInputTokens
 		changed = true
 	}
 	if merged.MaxOutputTokens <= 0 && fallback.MaxOutputTokens > 0 {
@@ -1489,6 +1512,7 @@ type upstreamModelCapabilityEntry struct {
 	Modalities               modelsDevModalities        `json:"modalities"`
 	ContextWindow            int64                      `json:"context_window"`
 	MaxContextWindow         int64                      `json:"max_context_window"`
+	MaxInputTokens           int64                      `json:"max_input_tokens"`
 	MaxOutputTokens          int64                      `json:"max_output_tokens"`
 	Limit                    modelsDevLimit             `json:"limit"`
 	DisplayNameCamel         string                     `json:"displayName"`
@@ -1668,6 +1692,7 @@ func upstreamMetadataFromCapabilityEntry(modelID string, entry upstreamModelCapa
 		InputModalities:          normalizeCodexInputModalities(modalities),
 		ContextWindow:            contextWindow,
 		MaxContextWindow:         entry.MaxContextWindow,
+		MaxInputTokens:           entry.MaxInputTokens,
 		MaxOutputTokens:          maxOutputTokens,
 	}
 }

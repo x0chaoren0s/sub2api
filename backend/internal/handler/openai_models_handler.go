@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -63,7 +64,31 @@ func writeOpenAIModelsResponse(c *gin.Context, manifest *service.OpenAIModelsRes
 
 // Both discovery endpoints consume the same final catalogue, after group/platform
 // selection and allowlist filtering. Preserve every field on the selected entry.
-func writeModelsListResponse(c *gin.Context, models any) {
+func (h *GatewayHandler) writeModelsListResponse(c *gin.Context, models any) {
+	if apiKey, ok := middleware2.GetAPIKeyFromContext(c); ok && apiKey != nil && apiKey.Group != nil {
+		encoded, err := json.Marshal(models)
+		if err != nil {
+			writeOpenAIModelsError(c, http.StatusInternalServerError, "api_error", "Failed to encode model catalogue")
+			return
+		}
+		var entries []map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &entries); err != nil {
+			writeOpenAIModelsError(c, http.StatusInternalServerError, "api_error", "Failed to encode model catalogue")
+			return
+		}
+		ids := make([]string, len(entries))
+		for i, entry := range entries {
+			_ = json.Unmarshal(entry["id"], &ids[i])
+		}
+		platform, _ := middleware2.GetForcePlatformFromContext(c)
+		limits := h.gatewayService.ModelTokenLimitsForGroup(c.Request.Context(), apiKey.Group, platform, ids)
+		for i, entry := range entries {
+			for field, value := range limits[ids[i]] {
+				entry[field], _ = json.Marshal(value)
+			}
+		}
+		models = entries
+	}
 	response := gin.H{"object": "list", "data": models}
 	if c.Param("model") == "" {
 		c.JSON(http.StatusOK, response)

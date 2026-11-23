@@ -260,6 +260,7 @@ func TestMessagesDisabledThinkingCountTokensHTTP(t *testing.T) {
 	}}
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
 	account := rawGPT56ResponsesAPIKeyAccount("gpt-6.1-sol", "gpt-6.1-sol")
+	account.Credentials["base_url"] = "https://api.openai.com"
 	ctx := WithOpenAIReasoningEffortPolicyForMessages(requestContext.Request.Context(), body, "", []ReasoningEffortMapping{{From: "none", To: "low"}}, "")
 	require.NoError(t, svc.ForwardCountTokensAsAnthropic(ctx, requestContext, account, body, ""))
 	require.Equal(t, http.StatusOK, recorder.Code)

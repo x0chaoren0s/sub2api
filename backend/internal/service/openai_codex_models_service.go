@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
@@ -248,18 +249,7 @@ func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, 
 	groupAccounts, listErr := repo.ListModelAvailabilityCandidates(
 		ctx,
 		&groupID,
-		[]string{
-			PlatformAnthropic,
-			PlatformOpenAI,
-			PlatformGemini,
-			PlatformAntigravity,
-			PlatformGrok,
-			PlatformKimi,
-			PlatformZhipu,
-			PlatformDeepseek,
-			PlatformMiniMax,
-			PlatformOpenCodeGo,
-		},
+		domain.ConcretePlatformIDs(),
 		false,
 	)
 	if listErr != nil {

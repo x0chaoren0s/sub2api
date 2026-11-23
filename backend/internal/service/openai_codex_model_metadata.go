@@ -182,9 +182,6 @@ func groupCodexModelMetadata(
 	if modelID == "" {
 		return codexModelMetadataOverride{}, false
 	}
-	// 显式路由规则本身与平台无关，先取出来供后续两处判定共用。
-	routedAccountIDs := codexModelRoutingAccountIDs(group, modelID)
-	routed := len(routedAccountIDs) > 0
 	upstreamModel := modelID
 	if platform == PlatformComposite {
 		var resolved bool
@@ -195,7 +192,7 @@ func groupCodexModelMetadata(
 			compositeRoutesAvailable,
 		)
 		if !resolved {
-			if !routed && codexExplicitModelTargetsConflict(accounts, modelID) {
+			if len(codexModelRoutingAccountIDs(group, modelID)) == 0 && codexExplicitModelTargetsConflict(accounts, modelID) {
 				return codexModelMetadataOverride{
 					reasoningConflict:       true,
 					inputModalitiesConflict: true,
@@ -204,6 +201,12 @@ func groupCodexModelMetadata(
 			return codexModelMetadataOverride{}, false
 		}
 	}
+	return groupModelMetadataForTarget(platform, modelID, upstreamModel, accounts, group)
+}
+
+func groupModelMetadataForTarget(platform, modelID, upstreamModel string, accounts []Account, group *Group) (codexModelMetadataOverride, bool) {
+	routedAccountIDs := codexModelRoutingAccountIDs(group, modelID)
+	routed := len(routedAccountIDs) > 0
 	if !isConcreteRequestPlatform(platform) {
 		return codexModelMetadataOverride{}, false
 	}
@@ -452,6 +455,24 @@ func intersectUpstreamModelMetadata(modelID string, candidates []UpstreamModelMe
 		}
 		if i == 0 || maxContextWindow < result.MaxContextWindow {
 			result.MaxContextWindow = maxContextWindow
+		}
+	}
+	for i, candidate := range candidates {
+		if candidate.MaxInputTokens <= 0 {
+			result.MaxInputTokens = 0
+			break
+		}
+		if i == 0 || candidate.MaxInputTokens < result.MaxInputTokens {
+			result.MaxInputTokens = candidate.MaxInputTokens
+		}
+	}
+	for i, candidate := range candidates {
+		if candidate.MaxOutputTokens <= 0 {
+			result.MaxOutputTokens = 0
+			break
+		}
+		if i == 0 || candidate.MaxOutputTokens < result.MaxOutputTokens {
+			result.MaxOutputTokens = candidate.MaxOutputTokens
 		}
 	}
 	return result

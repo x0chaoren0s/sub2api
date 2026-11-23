@@ -902,6 +902,31 @@ func TestSyncUpstreamModelCatalogDoesNotPersistPartialMetadataWhenRegistryFails(
 	require.Nil(t, repo.updates, "partial metadata must not replace a more complete persisted snapshot")
 }
 
+func TestSyncUpstreamModelCatalogPersistsTokenLimitsWithoutInventingCapabilities(t *testing.T) {
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"custom","context_window":1000000,"max_context_window":1000000,"max_input_tokens":1000000,"max_output_tokens":64000}]}`))},
+		{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(`{"error":"unavailable"}`))},
+	}}
+	repo := &upstreamModelMetadataRepoStub{}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	_, err := svc.SyncUpstreamModelCatalog(context.Background(), &Account{
+		ID: 96, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, repo.updates)
+	encoded, err := json.Marshal(repo.updates[UpstreamModelMetadataExtraKey])
+	require.NoError(t, err)
+	var snapshot UpstreamModelMetadataSnapshot
+	require.NoError(t, json.Unmarshal(encoded, &snapshot))
+	metadata := snapshot.Models["custom"]
+	require.Equal(t, int64(1000000), metadata.ContextWindow)
+	require.Equal(t, int64(1000000), metadata.MaxInputTokens)
+	require.Equal(t, int64(64000), metadata.MaxOutputTokens)
+	require.Nil(t, metadata.Reasoning)
+	require.Empty(t, metadata.InputModalities)
+}
+
 // Scenario: 图片专用模型缺少 context 时，不阻止 agent 模型能力落库，也不误报整批失败。
 func TestSyncUpstreamModelCatalogIgnoresDedicatedMediaModelsForCompleteness(t *testing.T) {
 	upstream := &httpUpstreamRecorder{responses: []*http.Response{
