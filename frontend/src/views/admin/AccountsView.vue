@@ -318,6 +318,7 @@
               :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
               :today-stats-loading="todayStatsLoading"
               :manual-refresh-token="usageManualRefreshToken"
+              :orbiqo-usage-refresh-token="orbiqoUsageRefreshToken"
               :batched-usage="usageBatchByAccountId[String(row.id)] ?? null"
               :batched-usage-error="usageBatchErrorByAccountId[String(row.id)] ?? null"
               :batched-usage-loading="usageBatchLoadingByAccountId[String(row.id)] === true"
@@ -521,7 +522,7 @@ import ScheduledTestsPanel from '@/components/admin/account/ScheduledTestsPanel.
 import type { SelectOption } from '@/components/common/Select.vue'
 import AccountStatusIndicator from '@/components/account/AccountStatusIndicator.vue'
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
-import { isOrbiqoQuotaAccount } from '@/utils/zcodeQuota'
+import { isOrbiqoQuotaAccount, ORBIQO_USAGE_CACHE_TTL_MS } from '@/utils/zcodeQuota'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
@@ -754,6 +755,11 @@ const pendingUsageBatchIds = new Set<number>()
 let usageBatchFlushTimer: ReturnType<typeof setTimeout> | null = null
 let queuedUsageBatchForce = false
 let usageBatchRequestToken = 0
+const orbiqoUsageRefreshToken = ref(0)
+
+const usageBatchCacheTTLFor = (account: Account) => (
+  isOrbiqoQuotaAccount(account) ? ORBIQO_USAGE_CACHE_TTL_MS : USAGE_BATCH_CACHE_TTL
+)
 
 const buildDefaultTodayStats = (): WindowStats => ({
   requests: 0,
@@ -872,7 +878,11 @@ const queueBatchedUsage = (account: Account, options?: { force?: boolean }) => {
     usageBatchCache.delete(cacheKey)
   } else {
     const cached = usageBatchCache.get(cacheKey)
-    if (cached && cached.refreshKey === buildAccountUsageRefreshKey(account) && Date.now() - cached.ts < USAGE_BATCH_CACHE_TTL) {
+    if (
+      cached &&
+      cached.refreshKey === buildAccountUsageRefreshKey(account) &&
+      Date.now() - cached.ts < usageBatchCacheTTLFor(account)
+    ) {
       setUsageBatchState(cacheKey, cached.data, null)
       setUsageBatchLoading(cacheKey, false)
       return
@@ -1515,11 +1525,28 @@ const refreshAccountsIncrementally = async () => {
     upstreamBillingNow.value = Date.now()
 
     await refreshTodayStatsBatch()
+    refreshOrbiqoUsageWindows()
   } catch (error) {
     console.error('Auto refresh failed:', error)
   } finally {
     autoRefreshFetching.value = false
   }
+}
+
+// OpenAI OAuth 用量会随账号列表里的 codex_* 快照变化自动触发；
+// open-zcode / open-lingxi / open-codebuddy 只能靠 /usage 轮询，这里在自动刷新时补拉。
+const refreshOrbiqoUsageWindows = () => {
+  const orbiqoAccounts = accounts.value.filter((account) => isOrbiqoQuotaAccount(account))
+  if (orbiqoAccounts.length === 0) return
+
+  if (isDesktopViewport.value) {
+    for (const account of orbiqoAccounts) {
+      queueBatchedUsage(account)
+    }
+    return
+  }
+
+  orbiqoUsageRefreshToken.value += 1
 }
 
 const handleManualRefresh = async () => {

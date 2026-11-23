@@ -2318,4 +2318,45 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).not.toContain('7d S')
     expect(wrapper.text()).not.toContain('7d F')
   })
+
+  it('orbiqo 用量窗口在 auto-refresh token 变化时会重新拉取', async () => {
+    getUsage
+      .mockResolvedValueOnce({
+        zcode_balances: [{ name: '查询', remaining: 500, total: 500, used_percent: 0 }]
+      })
+      .mockResolvedValueOnce({
+        zcode_balances: [{ name: '查询', remaining: 420, total: 500, used_percent: 16 }]
+      })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 4101,
+          platform: 'openai',
+          type: 'apikey',
+          credentials: { quota_source: 'codebuddy', base_url: 'https://owkbd.example/v1' }
+        }),
+        orbiqoUsageRefreshToken: 0
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'detail'],
+            template: '<div class="usage-bar">{{ label }}|{{ detail }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+    expect(getUsage).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('查询|500/500')
+
+    await wrapper.setProps({ orbiqoUsageRefreshToken: 1 })
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('查询|420/500')
+  })
 })

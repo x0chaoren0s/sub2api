@@ -1,5 +1,8 @@
 import type { Account } from '@/types'
 
+/** 与后端 zcodeQuotaCacheTTL（1 分钟）对齐，避免前端 5 分钟缓存挡住 open 源用量自动刷新。 */
+export const ORBIQO_USAGE_CACHE_TTL_MS = 60_000
+
 /** Anthropic API Key 账号在显式标记或使用 zcode-provider 短别名时，才去拉额度。 */
 export function isZcodeQuotaAccount(account: Pick<Account, 'platform' | 'type' | 'credentials'>): boolean {
   if (account.platform !== 'anthropic' || account.type !== 'apikey') return false

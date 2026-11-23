@@ -831,7 +831,7 @@ import { buildAccountUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber, formatDateTime } from '@/utils/format'
 import { isOfficialGeminiBaseUrl } from '@/utils/geminiExplicitCache'
-import { isOrbiqoQuotaAccount } from '@/utils/zcodeQuota'
+import { isOrbiqoQuotaAccount, ORBIQO_USAGE_CACHE_TTL_MS } from '@/utils/zcodeQuota'
 import { supportsAccountQuota } from '@/utils/accountQuota'
 import UsageProgressBar from './UsageProgressBar.vue'
 import AccountQuotaInfo from './AccountQuotaInfo.vue'
@@ -858,6 +858,7 @@ const props = withDefaults(
     todayStats?: WindowStats | null
     todayStatsLoading?: boolean
     manualRefreshToken?: number
+    orbiqoUsageRefreshToken?: number
     batchedUsage?: AccountUsageInfo | null
     batchedUsageError?: string | null
     batchedUsageLoading?: boolean
@@ -867,6 +868,7 @@ const props = withDefaults(
     todayStats: null,
     todayStatsLoading: false,
     manualRefreshToken: 0,
+    orbiqoUsageRefreshToken: 0,
     batchedUsage: null,
     batchedUsageError: null,
     batchedUsageLoading: false,
@@ -1660,7 +1662,8 @@ const loadUsage = async (options?: { source?: 'passive' | 'active'; bypassCache?
   // Check cache
   if (!options?.bypassCache) {
     const cached = _usageCache.get(props.account.id)
-    if (cached && cached.refreshKey === usageRefreshKey.value && Date.now() - cached.ts < USAGE_CACHE_TTL) {
+    const cacheTTL = isOrbiqoQuotaAccount(props.account) ? ORBIQO_USAGE_CACHE_TTL_MS : USAGE_CACHE_TTL
+    if (cached && cached.refreshKey === usageRefreshKey.value && Date.now() - cached.ts < cacheTTL) {
       usageInfo.value = cached.data
       loading.value = false
       return
@@ -1935,6 +1938,22 @@ watch(usageRefreshKey, (nextKey, prevKey) => {
   _usageCache.delete(props.account.id)
   requestAutoLoad(isAnthropicOAuthOrSetupToken.value ? 'passive' : undefined)
 })
+
+watch(
+  () => props.orbiqoUsageRefreshToken,
+  (nextToken, prevToken) => {
+    if (nextToken === prevToken) return
+    if (!isOrbiqoQuotaAccount(props.account)) return
+
+    if (isBatchManaged.value) {
+      requestParentBatchUsage()
+      return
+    }
+
+    _usageCache.delete(props.account.id)
+    requestAutoLoad()
+  }
+)
 
 watch(
   () => props.manualRefreshToken,
