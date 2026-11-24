@@ -631,6 +631,7 @@ export interface UpstreamModelMetadata {
   input_modalities?: string[]
   context_window?: number
   max_context_window?: number
+  max_input_tokens?: number
   max_output_tokens?: number
 }
 
