@@ -66,6 +66,39 @@ func TestZcodeQuotaURL(t *testing.T) {
 	require.Equal(t, "https://ozc.example/v1/orbiqo/quota", zcodeQuotaURL("https://ozc.example"))
 }
 
+func TestQuarkQuotaAccountAndBearerAuthentication(t *testing.T) {
+	for _, credentials := range []map[string]any{
+		{"base_url": "https://oqk.orbiqo.cc/v1"},
+		{"quota_source": "quark", "base_url": "http://127.0.0.1:8022/v1"},
+	} {
+		account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: credentials}
+		require.True(t, accountUsesOrbiqoQuota(account))
+		account.Type = AccountTypeOAuth
+		require.False(t, accountUsesOrbiqoQuota(account))
+	}
+	require.False(t, accountUsesOrbiqoQuota(&Account{
+		Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://example.com", "model_mapping": map[string]any{"qwen3.8-flash": "qwen3.8-flash"}},
+	}))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/orbiqo/quota", r.URL.Path)
+		require.Equal(t, "Bearer quark-local-key", r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, `{"object":"orbiqo.quota","windows":[{"window":"5h","used_percent":0},{"window":"7d","used_percent":63.97,"resets_at":"2026-11-30T03:10:44.034Z"}]}`)
+	}))
+	t.Cleanup(server.Close)
+	svc := &AccountUsageService{cfg: &config.Config{}}
+	svc.cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	info, err := svc.fetchZcodeQuota(context.Background(), &Account{
+		Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"quota_source": "quark", "api_key": "quark-local-key", "base_url": server.URL},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0.0, info.FiveHour.Utilization)
+	require.Nil(t, info.FiveHour.ResetsAt)
+	require.Equal(t, 63.97, info.SevenDay.Utilization)
+	require.Equal(t, time.Date(2026, 11, 30, 3, 10, 44, 34000000, time.UTC), *info.SevenDay.ResetsAt)
+}
+
 func TestFetchZcodeQuota(t *testing.T) {
 	var gotKey string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
