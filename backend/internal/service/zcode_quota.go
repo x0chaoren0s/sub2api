@@ -56,7 +56,15 @@ func accountUsesZcodeQuota(account *Account) bool {
 }
 
 func accountUsesOrbiqoQuota(account *Account) bool {
-	return accountUsesZcodeQuota(account) || accountUsesLingxiQuota(account) || accountUsesCodebuddyQuota(account)
+	return accountUsesZcodeQuota(account) || accountUsesLingxiQuota(account) || accountUsesCodebuddyQuota(account) || accountUsesQuarkQuota(account)
+}
+
+func accountUsesQuarkQuota(account *Account) bool {
+	if account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(account.GetCredential("quota_source")), "quark") ||
+		strings.Contains(strings.ToLower(account.GetCredential("base_url")), "://oqk.")
 }
 
 func accountUsesCodebuddyQuota(account *Account) bool {
@@ -153,6 +161,9 @@ func (s *AccountUsageService) fetchZcodeQuota(ctx context.Context, account *Acco
 		return nil, fmt.Errorf("zcode quota request: %w", err)
 	}
 	req.Header.Set("x-api-key", apiKey)
+	if accountUsesQuarkQuota(account) {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := zcodeQuotaHTTP.Do(req)

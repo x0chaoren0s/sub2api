@@ -35,7 +35,16 @@ export function isLingxiQuotaAccount(account: Pick<Account, 'platform' | 'type' 
 }
 
 export function isOrbiqoQuotaAccount(account: Pick<Account, 'platform' | 'type' | 'credentials'>): boolean {
-  return isZcodeQuotaAccount(account) || isLingxiQuotaAccount(account) || isCodebuddyQuotaAccount(account)
+  return isZcodeQuotaAccount(account) || isLingxiQuotaAccount(account) || isCodebuddyQuotaAccount(account) || isQuarkQuotaAccount(account)
+}
+
+/** OpenAI API Key 账号指向 open-quark 时，拉取 5 小时及周额度。 */
+export function isQuarkQuotaAccount(account: Pick<Account, 'platform' | 'type' | 'credentials'>): boolean {
+  if (account.platform !== 'openai' || account.type !== 'apikey') return false
+  const credentials = account.credentials as Record<string, unknown> | undefined
+  if (!credentials) return false
+  if (typeof credentials.quota_source === 'string' && credentials.quota_source.trim().toLowerCase() === 'quark') return true
+  return typeof credentials.base_url === 'string' && /:\/\/oqk\./i.test(credentials.base_url)
 }
 
 const CODEBUDDY_MODEL_IDS = new Set(['hy4free', 'fast-model', 'space-bunny'])
