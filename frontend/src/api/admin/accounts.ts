@@ -623,6 +623,8 @@ export interface UpstreamModelSyncWarning {
 
 export interface UpstreamModelMetadata {
   id: string
+  credit_multiplier?: string
+  pricing_labels?: string[]
   display_name?: string
   description?: string
   reasoning?: boolean

@@ -36,6 +36,8 @@ type UpstreamModelMetadata struct {
 	ID                       string                     `json:"id"`
 	DisplayName              string                     `json:"display_name,omitempty"`
 	Description              string                     `json:"description,omitempty"`
+	CreditMultiplier         string                     `json:"credit_multiplier,omitempty"`
+	PricingLabels            []string                   `json:"pricing_labels,omitempty"`
 	Reasoning                *bool                      `json:"reasoning,omitempty"`
 	DefaultReasoningLevel    string                     `json:"default_reasoning_level,omitempty"`
 	SupportedReasoningLevels []string                   `json:"supported_reasoning_levels,omitempty"`
@@ -310,21 +312,22 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 	}
 
 	completeMetadata := completeUpstreamModelMetadataSubset(capabilityIDs, catalog.Metadata)
-	// Token limits are independently useful even when reasoning or modality
-	// metadata is unavailable. Persist just the known limits in that case.
+	// Token limits and declared credit multipliers are useful even when reasoning
+	// or modality metadata is unavailable. Persist those known fields separately.
 	for _, modelID := range capabilityIDs {
 		if _, complete := completeMetadata[modelID]; complete {
 			continue
 		}
 		entry := catalog.Metadata[modelID]
-		if entry.ContextWindow <= 0 && entry.MaxContextWindow <= 0 && entry.MaxInputTokens <= 0 && entry.MaxOutputTokens <= 0 {
+		if entry.ContextWindow <= 0 && entry.MaxContextWindow <= 0 && entry.MaxInputTokens <= 0 && entry.MaxOutputTokens <= 0 && entry.CreditMultiplier == "" && len(entry.PricingLabels) == 0 {
 			continue
 		}
 		if completeMetadata == nil {
 			completeMetadata = make(map[string]UpstreamModelMetadata)
 		}
 		completeMetadata[modelID] = UpstreamModelMetadata{ID: modelID, ContextWindow: entry.ContextWindow,
-			MaxContextWindow: entry.MaxContextWindow, MaxInputTokens: entry.MaxInputTokens, MaxOutputTokens: entry.MaxOutputTokens}
+			MaxContextWindow: entry.MaxContextWindow, MaxInputTokens: entry.MaxInputTokens, MaxOutputTokens: entry.MaxOutputTokens,
+			CreditMultiplier: entry.CreditMultiplier, PricingLabels: entry.PricingLabels}
 	}
 	persistedCapabilities := false
 	if len(completeMetadata) > 0 && account != nil && account.ID > 0 && s.accountRepo != nil {
@@ -454,6 +457,8 @@ func upstreamCatalogNeedsRegistry(models []string, metadata map[string]UpstreamM
 func upstreamModelMetadataIsUseful(metadata UpstreamModelMetadata) bool {
 	return strings.TrimSpace(metadata.DisplayName) != "" ||
 		strings.TrimSpace(metadata.Description) != "" ||
+		strings.TrimSpace(metadata.CreditMultiplier) != "" ||
+		len(metadata.PricingLabels) > 0 ||
 		metadata.Reasoning != nil ||
 		len(metadata.SupportedReasoningLevels) > 0 ||
 		len(metadata.InputModalities) > 0 ||
@@ -1504,6 +1509,8 @@ type upstreamModelCapabilityEntry struct {
 	upstreamModelEntry
 	DisplayName              string                     `json:"display_name"`
 	Description              string                     `json:"description"`
+	CreditMultiplier         string                     `json:"credit_multiplier"`
+	PricingLabels            []string                   `json:"pricing_labels"`
 	Reasoning                *bool                      `json:"reasoning"`
 	DefaultReasoningLevel    string                     `json:"default_reasoning_level"`
 	SupportedReasoningLevels []json.RawMessage          `json:"supported_reasoning_levels"`
@@ -1686,6 +1693,8 @@ func upstreamMetadataFromCapabilityEntry(modelID string, entry upstreamModelCapa
 		ID:                       modelID,
 		DisplayName:              displayName,
 		Description:              strings.TrimSpace(entry.Description),
+		CreditMultiplier:         strings.TrimSpace(entry.CreditMultiplier),
+		PricingLabels:            entry.PricingLabels,
 		Reasoning:                reasoning,
 		DefaultReasoningLevel:    defaultReasoningLevel,
 		SupportedReasoningLevels: levels,

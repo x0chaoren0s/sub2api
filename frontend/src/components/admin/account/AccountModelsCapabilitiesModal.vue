@@ -57,7 +57,11 @@
             <thead class="sticky top-0 bg-gray-50 dark:bg-dark-800">
               <tr class="text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
                 <th class="px-4 py-3">{{ t('admin.accounts.modelCapabilities.model') }}</th>
-                <th class="px-4 py-3">{{ t('admin.accounts.modelCapabilities.capabilities') }}</th>
+                <th class="whitespace-nowrap px-4 py-3">{{ t('admin.accounts.modelCapabilities.multiplier') }}</th>
+                <th class="whitespace-nowrap px-4 py-3">{{ t('admin.accounts.modelCapabilities.reasoningLevels') }}</th>
+                <th class="whitespace-nowrap px-4 py-3">{{ t('admin.accounts.modelCapabilities.inputTypes') }}</th>
+                <th class="whitespace-nowrap px-4 py-3">{{ t('admin.accounts.modelCapabilities.context') }}</th>
+                <th class="whitespace-nowrap px-4 py-3">{{ t('admin.accounts.modelCapabilities.outputLimit') }}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 bg-white dark:divide-dark-700 dark:bg-dark-900">
@@ -71,72 +75,100 @@
                     {{ t('admin.accounts.modelCapabilities.mapsTo', { model: row.upstreamId }) }}
                   </div>
                 </td>
-                <td class="px-4 py-3">
-                  <div class="flex flex-wrap gap-1.5">
-                    <template v-if="row.hasMetadata">
-                      <span
-                        v-if="row.reasoning !== undefined"
-                        class="rounded-md px-2 py-0.5 text-xs font-medium"
-                        :class="row.reasoning
-                          ? 'bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300'
-                          : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'"
-                      >
-                        {{ row.reasoning
-                          ? t('admin.accounts.modelCapabilities.reasoningYes')
-                          : t('admin.accounts.modelCapabilities.reasoningNo') }}
-                      </span>
-                      <span
-                        v-for="level in row.reasoningLevels"
-                        :key="`${row.id}-lvl-${level}`"
-                        class="rounded-md bg-violet-50 px-2 py-0.5 text-xs text-violet-700 dark:bg-violet-500/10 dark:text-violet-300"
-                      >
-                        {{ t('admin.accounts.modelCapabilities.reasoningLevel', { level }) }}
-                      </span>
-                      <span
-                        v-for="modality in row.inputModalities"
-                        :key="`${row.id}-mod-${modality}`"
-                        class="rounded-md bg-sky-100 px-2 py-0.5 text-xs text-sky-700 dark:bg-sky-500/20 dark:text-sky-300"
-                      >
-                        {{ modalityLabel(modality) }}
-                      </span>
-                      <span
-                        v-if="row.contextWindow"
-                        class="rounded-md bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300"
-                      >
-                        {{ t('admin.accounts.modelCapabilities.contextWindow', { value: formatTokens(row.contextWindow) }) }}
-                      </span>
-                      <span
-                        v-if="row.maxContextWindow && row.maxContextWindow !== row.contextWindow"
-                        class="rounded-md bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
-                      >
-                        {{ t('admin.accounts.modelCapabilities.maxContextWindow', { value: formatTokens(row.maxContextWindow) }) }}
-                      </span>
-                      <span
-                        v-if="row.maxInputTokens"
-                        class="rounded-md bg-teal-100 px-2 py-0.5 text-xs text-teal-700 dark:bg-teal-500/20 dark:text-teal-300"
-                      >
-                        {{ t('admin.accounts.modelCapabilities.maxInput', { value: formatTokens(row.maxInputTokens) }) }}
-                      </span>
-                      <span
-                        v-if="row.maxOutputTokens"
-                        class="rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
-                      >
-                        {{ t('admin.accounts.modelCapabilities.maxOutput', { value: formatTokens(row.maxOutputTokens) }) }}
-                      </span>
-                      <span
-                        v-if="row.defaultReasoningLevel"
-                        class="rounded-md bg-fuchsia-50 px-2 py-0.5 text-xs text-fuchsia-700 dark:bg-fuchsia-500/10 dark:text-fuchsia-300"
-                      >
-                        {{ t('admin.accounts.modelCapabilities.defaultReasoning', { level: row.defaultReasoningLevel }) }}
-                      </span>
-                    </template>
+                <td class="whitespace-nowrap px-4 py-3">
+                  <div class="flex flex-col items-start gap-1.5">
+                    <span v-if="row.creditMultiplier" class="font-medium tabular-nums text-gray-900 dark:text-gray-100">
+                      {{ row.creditMultiplier }}
+                    </span>
+                    <span v-else class="text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.accounts.modelCapabilities.undeclared') }}
+                    </span>
                     <span
-                      v-else
-                      class="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-500 dark:bg-dark-700 dark:text-gray-400"
+                      v-for="label in row.pricingLabels"
+                      :key="label"
+                      class="rounded-md bg-teal-50 px-2 py-0.5 text-xs text-teal-700 dark:bg-teal-500/10 dark:text-teal-300"
                     >
-                      {{ t('admin.accounts.modelCapabilities.incomplete') }}
+                      {{ label }}
                     </span>
                   </div>
+                </td>
+                <td class="px-4 py-3">
+                  <div class="flex flex-wrap gap-1.5">
+                    <span v-if="row.reasoning === false" class="text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.accounts.modelCapabilities.reasoningNo') }}
+                    </span>
+                    <template v-else-if="row.reasoningLevels.length || row.defaultReasoningLevel">
+                      <span
+                        v-for="level in row.reasoningLevels.length ? row.reasoningLevels : [row.defaultReasoningLevel]"
+                        :key="`${row.id}-lvl-${level}`"
+                        class="rounded-md bg-violet-50 px-2 py-0.5 text-xs text-violet-700 dark:bg-violet-500/10 dark:text-violet-300"
+                        :title="level === row.defaultReasoningLevel
+                          ? t('admin.accounts.modelCapabilities.defaultReasoning', { level })
+                          : undefined"
+                      >
+                        <strong v-if="level === row.defaultReasoningLevel" class="font-bold">{{ level }}</strong>
+                        <template v-else>{{ level }}</template>
+                      </span>
+                    </template>
+                    <span v-else class="text-xs text-gray-500 dark:text-gray-400">
+                      {{ row.reasoning
+                        ? t('admin.accounts.modelCapabilities.reasoningYes')
+                        : t('admin.accounts.modelCapabilities.undeclared') }}
+                    </span>
+                  </div>
+                </td>
+                <td class="px-4 py-3">
+                  <div class="flex flex-wrap gap-1.5">
+                    <span
+                      v-for="modality in row.inputModalities"
+                      :key="`${row.id}-mod-${modality}`"
+                      class="rounded-md bg-sky-100 px-2 py-0.5 text-xs text-sky-700 dark:bg-sky-500/20 dark:text-sky-300"
+                    >
+                      {{ modalityLabel(modality) }}
+                    </span>
+                    <span v-if="!row.inputModalities.length" class="text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.accounts.modelCapabilities.undeclared') }}
+                    </span>
+                  </div>
+                </td>
+                <td class="whitespace-nowrap px-4 py-3 tabular-nums">
+                  <div class="flex flex-col items-start gap-1.5">
+                    <span
+                      v-if="row.contextWindow"
+                      class="rounded-md bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300"
+                    >
+                      {{ formatTokens(row.contextWindow) }}
+                    </span>
+                    <span
+                      v-if="row.maxContextWindow && row.maxContextWindow !== row.contextWindow"
+                      class="rounded-md bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300"
+                    >
+                      {{ t('admin.accounts.modelCapabilities.maxContextWindow', { value: formatTokens(row.maxContextWindow) }) }}
+                    </span>
+                    <span
+                      v-if="row.maxInputTokens"
+                      class="rounded-md bg-teal-100 px-2 py-0.5 text-xs text-teal-700 dark:bg-teal-500/20 dark:text-teal-300"
+                    >
+                      {{ t('admin.accounts.modelCapabilities.maxInput', { value: formatTokens(row.maxInputTokens) }) }}
+                    </span>
+                    <span
+                      v-if="!row.contextWindow && !row.maxContextWindow && !row.maxInputTokens"
+                      class="text-xs text-gray-500 dark:text-gray-400"
+                    >
+                      {{ t('admin.accounts.modelCapabilities.undeclared') }}
+                    </span>
+                  </div>
+                </td>
+                <td class="whitespace-nowrap px-4 py-3 tabular-nums">
+                  <span
+                    v-if="row.maxOutputTokens"
+                    class="inline-block rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
+                  >
+                    {{ formatTokens(row.maxOutputTokens) }}
+                  </span>
+                  <span v-else class="text-xs text-gray-500 dark:text-gray-400">
+                    {{ t('admin.accounts.modelCapabilities.undeclared') }}
+                  </span>
                 </td>
               </tr>
             </tbody>

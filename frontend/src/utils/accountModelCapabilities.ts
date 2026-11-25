@@ -10,6 +10,8 @@ export interface AccountModelCapabilityRow {
   id: string
   displayName?: string
   upstreamId?: string
+  creditMultiplier?: string
+  pricingLabels: string[]
   reasoning?: boolean
   defaultReasoningLevel?: string
   reasoningLevels: string[]
@@ -60,6 +62,8 @@ export function parseUpstreamModelMetadataSnapshot(extra: unknown): UpstreamMode
     if (!model) continue
     models[id] = {
       id: asString(model.id) || id,
+      credit_multiplier: asString(model.credit_multiplier),
+      pricing_labels: asStringList(model.pricing_labels),
       display_name: asString(model.display_name),
       description: asString(model.description),
       reasoning: asBoolean(model.reasoning),
@@ -101,7 +105,9 @@ function rowFromMetadata(
 ): AccountModelCapabilityRow {
   const hasMetadata = Boolean(
     metadata &&
-      (metadata.reasoning !== undefined ||
+      (Boolean(metadata.credit_multiplier) ||
+        (metadata.pricing_labels?.length ?? 0) > 0 ||
+        metadata.reasoning !== undefined ||
         (metadata.supported_reasoning_levels?.length ?? 0) > 0 ||
         (metadata.input_modalities?.length ?? 0) > 0 ||
         (metadata.context_window ?? 0) > 0 ||
@@ -114,6 +120,8 @@ function rowFromMetadata(
     id,
     displayName: metadata?.display_name,
     upstreamId: upstreamId && upstreamId !== id ? upstreamId : undefined,
+    creditMultiplier: formatCreditMultiplier(metadata?.credit_multiplier),
+    pricingLabels: metadata?.pricing_labels ?? [],
     reasoning: metadata?.reasoning,
     defaultReasoningLevel: metadata?.default_reasoning_level,
     reasoningLevels: metadata?.supported_reasoning_levels ?? [],
@@ -124,6 +132,12 @@ function rowFromMetadata(
     maxOutputTokens: metadata?.max_output_tokens,
     hasMetadata,
   }
+}
+
+function formatCreditMultiplier(value?: string): string | undefined {
+  if (!value) return undefined
+  const match = value.match(/^([~～≈]?)\s*x?\s*(\d+(?:\.\d+)?)\s*x?(?:\s+credits?)?$/i)
+  return match ? `${match[1] ? '≈' : ''}${match[2]}x` : value
 }
 
 function lookupMetadata(
