@@ -5,6 +5,24 @@ import {
 } from '../accountModelCapabilities'
 
 describe('accountModelCapabilities', () => {
+  it('keeps declared multipliers, free tiers and badges through model aliases', () => {
+    const rows = buildAccountModelCapabilityRows({
+      credentials: { model_mapping: { 'free-alias': 'free' } },
+      extra: { upstream_model_metadata: { models: {
+        free: { id: 'free', credit_multiplier: 'x0.00', pricing_labels: ['限时免费'] },
+        glm: { id: 'glm', credit_multiplier: '～0.75x' },
+        paid: { id: 'paid', credit_multiplier: 'x0.29 credits' },
+        unknown: { id: 'unknown' },
+      } } },
+    })
+    expect(rows.find(row => row.id === 'free-alias')).toMatchObject({
+      creditMultiplier: '0.00x', pricingLabels: ['限时免费'], hasMetadata: true,
+    })
+    expect(rows.find(row => row.id === 'glm')?.creditMultiplier).toBe('≈0.75x')
+    expect(rows.find(row => row.id === 'paid')?.creditMultiplier).toBe('0.29x')
+    expect(rows.find(row => row.id === 'unknown')?.creditMultiplier).toBeUndefined()
+  })
+
   it('parses upstream metadata snapshot from account.extra', () => {
     const snapshot = parseUpstreamModelMetadataSnapshot({
       upstream_model_metadata: {

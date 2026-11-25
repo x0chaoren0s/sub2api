@@ -70,6 +70,72 @@ type upstreamModelMetadataRepoStub struct {
 	casCalls  int
 }
 
+func TestSyncUpstreamModelCatalogPersistsCreditMultiplierWithoutInventingCapabilities(t *testing.T) {
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":[
+			{"id":"free","credit_multiplier":"x0.00","pricing_labels":["限时免费"]},
+			{"id":"approx","credit_multiplier":"～0.75x"}
+		]}`))},
+		{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(`{"error":"unavailable"}`))},
+	}}
+	repo := &upstreamModelMetadataRepoStub{}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	_, err := svc.SyncUpstreamModelCatalog(context.Background(), &Account{
+		ID: 96, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1"},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, repo.updates)
+	encoded, err := json.Marshal(repo.updates[UpstreamModelMetadataExtraKey])
+	require.NoError(t, err)
+	var snapshot struct {
+		Models map[string]map[string]any `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(encoded, &snapshot))
+	require.Equal(t, "x0.00", snapshot.Models["free"]["credit_multiplier"])
+	require.Equal(t, []any{"限时免费"}, snapshot.Models["free"]["pricing_labels"])
+	require.Equal(t, "～0.75x", snapshot.Models["approx"]["credit_multiplier"])
+	require.NotContains(t, snapshot.Models["free"], "reasoning")
+	require.NotContains(t, snapshot.Models["free"], "context_window")
+}
+
+func TestSyncUpstreamModelCatalogRefreshesCreditMultiplierAndClearsExpiredLabels(t *testing.T) {
+	upstream := &httpUpstreamRecorder{}
+	for _, pricing := range []string{
+		`,"credit_multiplier":"x0.00","pricing_labels":["限时免费"]`,
+		`,"credit_multiplier":"x0.03"`,
+		``,
+	} {
+		upstream.responses = append(upstream.responses, &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"model","reasoning":false,"input_modalities":["text"],"context_window":1000000` + pricing + `}]}`)),
+		})
+	}
+	repo := &upstreamModelMetadataRepoStub{}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	account := &Account{ID: 97, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1"}}
+	for index, expected := range []string{"x0.00", "x0.03", ""} {
+		_, err := svc.SyncUpstreamModelCatalog(context.Background(), account)
+		require.NoError(t, err)
+		encoded, err := json.Marshal(repo.updates[UpstreamModelMetadataExtraKey])
+		require.NoError(t, err)
+		var snapshot struct {
+			Models map[string]map[string]any `json:"models"`
+		}
+		require.NoError(t, json.Unmarshal(encoded, &snapshot))
+		if expected == "" {
+			require.NotContains(t, snapshot.Models["model"], "credit_multiplier")
+		} else {
+			require.Equal(t, expected, snapshot.Models["model"]["credit_multiplier"])
+		}
+		if index > 0 {
+			require.NotContains(t, snapshot.Models["model"], "pricing_labels")
+		}
+	}
+	require.Len(t, upstream.requests, 3)
+}
+
 func headerValuesEqualFold(header http.Header, name string) []string {
 	for key, values := range header {
 		if strings.EqualFold(key, name) {
