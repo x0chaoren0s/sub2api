@@ -884,7 +884,7 @@ export default {
       fillRelatedModels: 'Sync latest supported models',
       syncUpstreamModels: 'Sync upstream supported models',
       syncUpstreamModelsLoading: 'Syncing upstream...',
-      syncUpstreamModelsSuccess: 'Synced {count} new model(s) from upstream ({total} upstream total)',
+      syncUpstreamModelsSuccess: 'Synced the latest model list ({total} upstream total)',
       syncUpstreamModelsNoChanges: 'All {count} upstream model(s) are already in the whitelist',
       syncUpstreamModelsEmpty: 'Upstream returned no models to sync',
       syncUpstreamModelsFailed: 'Failed to sync upstream models',

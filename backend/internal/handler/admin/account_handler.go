@@ -3057,6 +3057,15 @@ func antigravityAccountTestModels(rawMapping any) []antigravity.ClaudeModel {
 // SyncUpstreamModels handles syncing live supported models from an account's upstream.
 // POST /api/v1/admin/accounts/:id/models/sync-upstream
 func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
+	capabilitiesOnly := false
+	if value, present := c.GetQuery("capabilities_only"); present {
+		var err error
+		capabilitiesOnly, err = strconv.ParseBool(value)
+		if err != nil {
+			response.BadRequest(c, "Invalid capabilities_only value")
+			return
+		}
+	}
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
@@ -3074,7 +3083,11 @@ func (h *AccountHandler) SyncUpstreamModels(c *gin.Context) {
 		return
 	}
 
-	catalog, err := h.accountTestService.SyncUpstreamModelCatalog(c.Request.Context(), account)
+	syncModels := h.accountTestService.SyncUpstreamModelCatalogForScheduling
+	if capabilitiesOnly {
+		syncModels = h.accountTestService.SyncUpstreamModelCatalog
+	}
+	catalog, err := syncModels(c.Request.Context(), account)
 	if err != nil {
 		var syncErr *service.UpstreamModelSyncError
 		if errors.As(err, &syncErr) {

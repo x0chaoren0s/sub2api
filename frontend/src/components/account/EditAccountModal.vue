@@ -361,7 +361,7 @@
               ref="grokApiKeyWhitelistRef"
               v-show="modelRestrictionMode === 'whitelist'"
               v-model="allowedModels"
-              :model-mappings="modelMappings"
+              v-model:model-mappings="modelMappings"
               :platform="account?.platform || 'anthropic'"
               :account-id="account?.id"
               :show-sync-button="account.platform !== 'grok' || !account.id"
@@ -957,7 +957,7 @@
             ref="grokOAuthWhitelistRef"
             v-show="modelRestrictionMode === 'whitelist'"
             v-model="allowedModels"
-            :model-mappings="modelMappings"
+            v-model:model-mappings="modelMappings"
             :platform="account?.platform || 'anthropic'"
             :account-id="account?.id"
             :show-sync-button="account.platform !== 'grok' || !account.id"
@@ -1228,7 +1228,7 @@
 
           <!-- Whitelist Mode -->
           <div v-if="modelRestrictionMode === 'whitelist'">
-            <ModelWhitelistSelector v-model="allowedModels" :model-mappings="modelMappings" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
+            <ModelWhitelistSelector v-model="allowedModels" v-model:model-mappings="modelMappings" :platform="account?.platform || 'anthropic'" :account-id="account?.id" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
               <span v-if="allowedModels.length === 0 && modelMappings.length === 0">{{
@@ -1450,7 +1450,7 @@
 
           <!-- Whitelist Mode -->
           <div v-if="modelRestrictionMode === 'whitelist'">
-            <ModelWhitelistSelector v-model="allowedModels" :model-mappings="modelMappings" platform="anthropic" />
+            <ModelWhitelistSelector v-model="allowedModels" v-model:model-mappings="modelMappings" platform="anthropic" />
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
               <span v-if="allowedModels.length === 0 && modelMappings.length === 0">{{ t('admin.accounts.supportsAllModels') }}</span>
@@ -3994,6 +3994,9 @@ const syncGrokDiagnostics = async () => {
   try {
     const result = await adminAPI.accounts.syncUpstreamModels(id)
     if (syncVersion !== grokDiagnosticsSyncVersion || !props.show || props.account?.id !== id) return
+    if (result.model_mapping) {
+      loadModelRestrictionFromMapping(result.model_mapping)
+    }
     const warnings = result.warnings ?? []
     if (result.discovery_source === 'configured_fallback') {
       appStore.showWarning(t('admin.accounts.grokModelDiagnostics.configuredFallback'))
@@ -5137,11 +5140,16 @@ const syncAntigravityUpstreamModels = async () => {
       return
     }
 
+    const previousMappings = antigravityModelMappings.value
+    antigravityModelMappings.value = Object.entries(result.model_mapping ?? Object.fromEntries([
+      ...upstreamModels.map(model => [model, model] as const),
+      ...previousMappings.filter(mapping => upstreamModels.includes(mapping.to))
+        .map(mapping => [mapping.from, mapping.to] as const)
+    ])).map(([from, to]) => ({ from, to }))
     let addedCount = 0
     for (const model of upstreamModels) {
-      const exists = antigravityModelMappings.value.some((mapping) => mapping.from === model)
+      const exists = previousMappings.some((mapping) => mapping.from === model)
       if (!exists) {
-        antigravityModelMappings.value.push({ from: model, to: model })
         addedCount += 1
       }
     }
@@ -5157,7 +5165,7 @@ const syncAntigravityUpstreamModels = async () => {
       appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataIncomplete'))
       return
     }
-    if (addedCount > 0) {
+    if (addedCount > 0 || JSON.stringify(previousMappings) !== JSON.stringify(antigravityModelMappings.value)) {
       appStore.showSuccess(t('admin.accounts.syncUpstreamModelsSuccess', { count: addedCount, total: upstreamModels.length }))
     } else {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: upstreamModels.length }))

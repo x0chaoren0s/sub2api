@@ -1661,7 +1661,7 @@
             <div v-if="modelRestrictionMode === 'whitelist'">
               <ModelWhitelistSelector
                 v-model="allowedModels"
-                :model-mappings="modelMappings"
+                v-model:model-mappings="modelMappings"
                 :platform="form.platform"
                 :sync-credentials="syncPreviewCredentials"
                 @upstream-synced="upstreamModelsPreviewed = true"
@@ -2191,7 +2191,7 @@
           <div v-if="modelRestrictionMode === 'whitelist'">
             <ModelWhitelistSelector
               v-model="allowedModels"
-              :model-mappings="modelMappings"
+              v-model:model-mappings="modelMappings"
               platform="anthropic"
               :sync-credentials="syncPreviewCredentials"
               @upstream-synced="upstreamModelsPreviewed = true"
@@ -2533,7 +2533,7 @@
           <div v-if="modelRestrictionMode === 'whitelist'">
             <ModelWhitelistSelector
               v-model="allowedModels"
-              :model-mappings="modelMappings"
+              v-model:model-mappings="modelMappings"
               :platform="form.platform"
               :sync-credentials="syncPreviewCredentials"
               @upstream-synced="upstreamModelsPreviewed = true"
@@ -5599,7 +5599,7 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
       )
     if (upstreamModelsPreviewed.value || hasConcreteMappedTarget) {
       try {
-        const result = await adminAPI.accounts.syncUpstreamModels(account.id)
+        const result = await adminAPI.accounts.syncUpstreamModels(account.id, { capabilitiesOnly: true })
         const warnings = result.warnings ?? []
         if (warnings.some(warning => warning.code === 'upstream_model_metadata_incomplete')) {
           appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataIncomplete'))

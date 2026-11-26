@@ -154,7 +154,7 @@ import type { SyncUpstreamPreviewParams } from '@/api/admin/accounts'
 import { useClipboard } from '@/composables/useClipboard'
 import ModelIcon from '@/components/common/ModelIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { allModels, getModelsByPlatform } from '@/composables/useModelWhitelist'
+import { allModels, getModelsByPlatform, splitModelMappingObject } from '@/composables/useModelWhitelist'
 import { supportsUpstreamModelSync } from '@/constants/platformCatalog'
 import { extractApiErrorMessage } from '@/utils/apiError'
 
@@ -177,6 +177,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: string[]]
+  'update:modelMappings': [value: { from: string; to: string }[]]
   'upstream-synced': []
   'upstream-sync-finished': []
 }>()
@@ -345,15 +346,20 @@ const syncUpstreamModels = async () => {
       emit('upstream-synced')
     }
 
-    const newModels = [...props.modelValue]
-    let addedCount = 0
-    for (const model of upstreamModels) {
-      if (!newModels.includes(model)) {
-        newModels.push(model)
-        addedCount += 1
-      }
+    const mapping = result.model_mapping ?? Object.fromEntries([
+      ...upstreamModels.map(model => [model, model]),
+      ...(props.modelMappings ?? [])
+        .filter(rule => upstreamModels.includes(rule.to.trim()))
+        .map(rule => [rule.from.trim(), rule.to.trim()])
+    ])
+    const refreshed = splitModelMappingObject(mapping)
+    const newModels = refreshed.allowedModels
+    const addedCount = newModels.filter(model => !props.modelValue.includes(model)).length
+    const removedCount = props.modelValue.filter(model => !newModels.includes(model)).length
+    const aliasesChanged = JSON.stringify(props.modelMappings ?? []) !== JSON.stringify(refreshed.modelMappings)
+    if (props.modelMappings) {
+      emit('update:modelMappings', refreshed.modelMappings)
     }
-
     emit('update:modelValue', newModels)
     const warnings = result.warnings ?? []
     const hasPartialMetadata = warnings.some(
@@ -366,7 +372,7 @@ const syncUpstreamModels = async () => {
       appStore.showWarning(t('admin.accounts.syncUpstreamModelsMetadataIncomplete'))
       return
     }
-    if (addedCount > 0) {
+    if (addedCount > 0 || removedCount > 0 || aliasesChanged) {
       appStore.showSuccess(t('admin.accounts.syncUpstreamModelsSuccess', { count: addedCount, total: upstreamModels.length }))
     } else {
       appStore.showInfo(t('admin.accounts.syncUpstreamModelsNoChanges', { count: upstreamModels.length }))

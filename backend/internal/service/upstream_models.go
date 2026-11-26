@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -57,6 +58,7 @@ type UpstreamModelMetadataSnapshot struct {
 
 type UpstreamModelCatalog struct {
 	Models               []string                         `json:"models"`
+	ModelMapping         map[string]string                `json:"model_mapping,omitempty"`
 	Metadata             map[string]UpstreamModelMetadata `json:"metadata,omitempty"`
 	Warnings             []UpstreamModelSyncWarning       `json:"warnings,omitempty"`
 	DiscoverySource      string                           `json:"discovery_source,omitempty"`
@@ -226,6 +228,17 @@ func (s *AccountTestService) FetchUpstreamSupportedModels(ctx context.Context, a
 // snapshot. When no model is complete, the existing account snapshot is left
 // untouched.
 func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
+	return s.syncUpstreamModelCatalog(ctx, account, false)
+}
+
+// SyncUpstreamModelCatalogForScheduling reconciles scheduling and capability
+// snapshots with the live catalog, removing retired targets while keeping aliases
+// to listed models. Post-create capability enrichment preserves manual restrictions.
+func (s *AccountTestService) SyncUpstreamModelCatalogForScheduling(ctx context.Context, account *Account) (*UpstreamModelCatalog, error) {
+	return s.syncUpstreamModelCatalog(ctx, account, true)
+}
+
+func (s *AccountTestService) syncUpstreamModelCatalog(ctx context.Context, account *Account, syncScheduling bool) (*UpstreamModelCatalog, error) {
 	fetched, err := s.fetchUpstreamModelListWithObservation(ctx, account)
 	var (
 		models          []string
@@ -264,6 +277,11 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		return nil, newUpstreamModelSyncInternalError("Failed to save upstream model catalog", saveErr)
 	}
 	catalog := &UpstreamModelCatalog{Models: models, Metadata: make(map[string]UpstreamModelMetadata)}
+	if liveListAvailable {
+		catalog.DiscoverySource = "upstream"
+	} else {
+		catalog.DiscoverySource = "configured_fallback"
+	}
 	if account != nil && account.IsGrok() {
 		if grokObservation != nil && grokObservation.Attempt.Status == grokCatalogStatusConfiguredFallback {
 			catalog.DiscoverySource = "configured_fallback"
@@ -282,10 +300,14 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		}
 	}
 
-	// Capability enrichment also covers concrete model_mapping targets. Admins may
-	// whitelist models that the live /models list omitted; those still need registry
-	// metadata so Codex catalogs can advertise reasoning and modalities.
-	enrichIDs := dedupeAndSortModelIDs(append(append([]string{}, models...), configuredUpstreamModelsForCapabilitySync(account)...))
+	// Explicit scheduling sync treats the live directory as authoritative. The
+	// capability-only path may still enrich manually configured targets when an
+	// upstream does not expose them in its catalog.
+	authoritativeList := syncScheduling && liveListAvailable
+	enrichIDs := models
+	if !authoritativeList {
+		enrichIDs = dedupeAndSortModelIDs(append(append([]string{}, models...), configuredUpstreamModelsForCapabilitySync(account)...))
+	}
 	// Dedicated image/video generators are not Codex agent catalog entries and often
 	// omit context windows in public registries. Keep them out of completeness checks
 	// so they do not mask successful agent-model capability sync.
@@ -330,9 +352,13 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 			CreditMultiplier: entry.CreditMultiplier, PricingLabels: entry.PricingLabels}
 	}
 	persistedCapabilities := false
-	if len(completeMetadata) > 0 && account != nil && account.ID > 0 && s.accountRepo != nil {
+	previous := account.GetUpstreamModelMetadataSnapshot()
+	if (len(completeMetadata) > 0 || (authoritativeList && previous != nil)) && account != nil && account.ID > 0 && s.accountRepo != nil {
+		if completeMetadata == nil {
+			completeMetadata = make(map[string]UpstreamModelMetadata)
+		}
 		// Retain known metadata only for models still listed or explicitly mapped.
-		if previous := account.GetUpstreamModelMetadataSnapshot(); previous != nil {
+		if previous != nil {
 			retainedModels := capabilityIDs
 			if !liveListAvailable {
 				retainedModels = append([]string(nil), capabilityIDs...)
@@ -380,6 +406,39 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 				Code:    UpstreamModelMetadataIncompleteCode,
 				Message: "Model IDs were synced, but capability metadata is incomplete.",
 			})
+		}
+	}
+	// The model-details sync and the account editor share this entry point.
+	// A successful manual refresh replaces stale restrictions, including the
+	// unrestricted case. Aliases remain valid only while their target is listed.
+	if authoritativeList && account != nil && account.ID > 0 && s.accountRepo != nil && !account.IsCredentialShadow() {
+		previousMapping := stringMappingFromRaw(account.Credentials["model_mapping"])
+		listed := make(map[string]bool, len(models))
+		for _, modelID := range models {
+			listed[modelID] = true
+		}
+		mapping := make(map[string]string, len(models))
+		for source, target := range previousMapping {
+			if listed[target] {
+				mapping[source] = target
+			}
+		}
+		for _, modelID := range models {
+			if !mappingSupportsRequestedModel(mapping, modelID) {
+				mapping[modelID] = modelID
+			}
+		}
+		catalog.ModelMapping = mapping
+		if !maps.Equal(previousMapping, mapping) {
+			updatedMapping := make(map[string]any, len(mapping))
+			for source, target := range mapping {
+				updatedMapping[source] = target
+			}
+			credentials := shallowCopyMap(account.Credentials)
+			credentials["model_mapping"] = updatedMapping
+			if err := persistAccountCredentials(ctx, s.accountRepo, account, credentials); err != nil {
+				return nil, newUpstreamModelSyncInternalError("Failed to save upstream scheduling models", err)
+			}
 		}
 	}
 	return catalog, nil
@@ -901,6 +960,7 @@ func (s *AccountTestService) keepGrokCatalogFailure(ctx context.Context, account
 
 // readUpstreamModelsResponse 发送模型列表请求并读取受限大小的响应体；非 2xx 返回带状态码的同步错误。
 func (s *AccountTestService) readUpstreamModelsResponse(req *http.Request, account *Account) ([]byte, error) {
+	req.Header.Set("Cache-Control", "no-cache")
 	resp, err := s.doUpstreamModelsRequest(req, upstreamModelsProxyURL(account), account)
 	if err != nil {
 		return nil, newUpstreamModelSyncUpstreamError("Failed to request upstream model list", err)
@@ -923,6 +983,9 @@ func (s *AccountTestService) readUpstreamModelsResponse(req *http.Request, accou
 			StatusCode: resp.StatusCode,
 			Err:        fmt.Errorf("upstream model list returned HTTP %d", resp.StatusCode),
 		}
+	}
+	if source := strings.ToLower(strings.TrimSpace(resp.Header.Get("X-Model-Catalog-Source"))); source != "" && source != "upstream" {
+		return nil, newUpstreamModelSyncUpstreamError("Upstream model refresh failed; the provider returned a fallback catalog", nil)
 	}
 	return body, nil
 }
