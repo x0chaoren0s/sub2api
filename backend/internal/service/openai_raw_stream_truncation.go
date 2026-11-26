@@ -24,7 +24,7 @@ const openAIRawStreamTruncatedUpstreamMessage = "Upstream Chat Completions strea
 // 三种终止信号任一出现即认为上游"讲完了"，只是尾巴可能丢失，不作截断处理：
 //
 //   - [DONE]        —— OpenAI CC 协议标准哨兵
-//   - usage chunk   —— include_usage 生效时的末尾用量帧（网关强制打开）
+//   - usage-only chunk —— include_usage 生效时 choices 为空的末尾用量帧
 //   - finish_reason —— 生成正常结束（stop/length/tool_calls/...）
 //
 // 只认 [DONE] 会误伤那些跑完最后一帧就直接 EOF 的兼容上游；只认 usage 会误伤
@@ -48,7 +48,7 @@ func (t *openAIRawStreamTerminalState) ObserveDataLine(payload string) {
 		t.sawDone = true
 		return
 	}
-	if usage := gjson.Get(payload, "usage"); usage.Exists() && usage.IsObject() {
+	if usage := gjson.Get(payload, "usage"); usage.IsObject() && isOpenAIChatUsageOnlyStreamChunk(payload) {
 		t.sawUsage = true
 	}
 	if t.sawFinishReason {

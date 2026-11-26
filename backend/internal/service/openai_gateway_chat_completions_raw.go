@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -320,6 +321,23 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	var firstTokenMs *int
 	clientDisconnected := false
 	clientOutputStarted := false
+	writeStreamError := func(c *gin.Context, status int, errType, message string) {
+		if !clientOutputStarted {
+			writeChatCompletionsError(c, status, errType, message)
+			return
+		}
+		if clientDisconnected {
+			return
+		}
+		payload, _ := json.Marshal(gin.H{"error": gin.H{"type": errType, "message": message}})
+		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", payload)
+		c.Writer.Flush()
+	}
+	if payload, err := s.readCCStreamJSONError(c, resp); err != nil {
+		return nil, s.handleCCStreamFailure(c, resp, account, upstreamModel, ccStreamScanState{Err: err}, false, writeStreamError)
+	} else if len(payload) > 0 {
+		return nil, s.handleCCUpstreamError(c, resp, account, upstreamModel, payload, false, writeStreamError)
+	}
 	flushPending := false
 	flushToClient := func() {
 		if flushPending && !clientDisconnected && clientOutputStarted {
@@ -331,6 +349,8 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var terminal openAIRawStreamTerminalState
+	var errorPayload []byte
+	var eventType string
 
 	writeLine := func(line string) {
 		if clientDisconnected {
@@ -366,9 +386,18 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		refusalDetector.ObserveSSELine(line)
+		if strings.HasPrefix(line, "event:") {
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			if eventType == "error" {
+				continue
+			}
+		}
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
 			trimmedPayload := strings.TrimSpace(payload)
+			if eventType == "error" || isCCUpstreamErrorPayload([]byte(trimmedPayload)) {
+				errorPayload = []byte(trimmedPayload)
+				break
+			}
 			terminal.ObserveDataLine(trimmedPayload)
 			if trimmedPayload != "[DONE]" {
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
@@ -381,7 +410,14 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 					firstTokenMs = &elapsed
 				}
 			}
+		} else if isCCUpstreamErrorPayload([]byte(strings.TrimSpace(line))) {
+			errorPayload = []byte(strings.TrimSpace(line))
+			break
 		}
+		if strings.TrimSpace(line) == "" {
+			eventType = ""
+		}
+		refusalDetector.ObserveSSELine(line)
 		line = applyOllamaCloudRawChatCompletionsSSELine(account, line)
 		line = stripEmptyChatToolCallIdentityFromSSELine(line)
 
@@ -409,6 +445,13 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			Duration:                      time.Since(startTime),
 			FirstTokenMs:                  firstTokenMs,
 		}
+	}
+	if len(errorPayload) > 0 {
+		streamErr := s.handleCCUpstreamError(c, resp, account, upstreamModel, errorPayload, clientOutputStarted, writeStreamError)
+		if !clientOutputStarted {
+			return nil, streamErr
+		}
+		return resultWithUsage(), streamErr
 	}
 
 	scanErr := scanner.Err()
@@ -533,6 +576,9 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 			writeChatCompletionsError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
 		}
 		return nil, fmt.Errorf("read upstream body: %w", err)
+	}
+	if payload := ccBufferedResponseErrorPayload(respBody); len(payload) > 0 {
+		return nil, s.handleCCUpstreamError(c, resp, account, upstreamModel, payload, false, writeChatCompletionsError)
 	}
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {

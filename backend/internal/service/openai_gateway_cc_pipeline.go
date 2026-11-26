@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -284,7 +285,9 @@ type ccStreamScanState struct {
 	FirstTokenMs *int
 	// SawDone 表示上游发出了 [DONE] 哨兵。
 	SawDone bool
-	// Err 为 scanner 读错误（客户端 context 取消不属于此类，会原样带出）。
+	// ErrorPayload is an upstream semantic failure, never a completion chunk.
+	ErrorPayload []byte
+	// Err 为 scanner 读错误或缺少终态（客户端 context 取消会原样带出）。
 	// 非 nil 时调用方必须跳过 finalize 并返回 usage-incomplete 错误，避免
 	// 把上游截断伪装成正常收尾。
 	Err error
@@ -304,11 +307,29 @@ func (s *OpenAIGatewayService) scanCCStream(
 ) ccStreamScanState {
 	var st ccStreamScanState
 
+	if payload, err := s.readCCStreamJSONError(c, resp); err != nil || len(payload) > 0 {
+		st.ErrorPayload, st.Err = payload, err
+		return st
+	}
+	var terminal openAIRawStreamTerminalState
+	var eventType string
 	scanner := s.newUpstreamSSEScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
+		if strings.HasPrefix(line, "event:") {
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			eventType = ""
+			continue
+		}
 		payload, ok := extractOpenAISSEDataLine(line)
 		if !ok {
+			if isCCUpstreamErrorPayload([]byte(strings.TrimSpace(line))) {
+				st.ErrorPayload = []byte(strings.TrimSpace(line))
+				return st
+			}
 			continue
 		}
 		payload = strings.TrimSpace(payload)
@@ -317,7 +338,12 @@ func (s *OpenAIGatewayService) scanCCStream(
 		}
 		if payload == "[DONE]" {
 			st.SawDone = true
+			terminal.ObserveDataLine(payload)
 			break
+		}
+		if eventType == "error" || isCCUpstreamErrorPayload([]byte(payload)) {
+			st.ErrorPayload = []byte(payload)
+			return st
 		}
 		// 观察上游 CC chunk 回显的 model / service_tier（计费以回显为准）。
 		// CC chunk 无 type 字段，按 untyped payload 观察（上游约束：只有终止
@@ -338,6 +364,7 @@ func (s *OpenAIGatewayService) scanCCStream(
 			)
 			continue
 		}
+		terminal.ObserveDataLine(payload)
 		if st.FirstTokenMs == nil && !isOpenAIChatUsageOnlyStreamChunk(payload) && chatChunkStartsResponsesOutput(&chunk) {
 			ms := int(time.Since(startTime).Milliseconds())
 			st.FirstTokenMs = &ms
@@ -354,7 +381,157 @@ func (s *OpenAIGatewayService) scanCCStream(
 		}
 		st.Err = err
 	}
+	if st.Err == nil && !terminal.Terminated() {
+		st.Err = ErrOpenAIUpstreamStreamTruncated
+	}
 	return st
+}
+
+func isCCUpstreamErrorPayload(payload []byte) bool {
+	if !gjson.ValidBytes(payload) {
+		return false
+	}
+	root := gjson.ParseBytes(payload)
+	if upstreamError := root.Get("error"); upstreamError.Exists() && upstreamError.Type != gjson.Null {
+		return true
+	}
+	if root.Get("type").String() == "error" {
+		return true
+	}
+	// Some compatible providers report HTTP 200 business failures through a
+	// top-level code/message pair, even alongside empty choices and usage.
+	code := root.Get("code")
+	if code.Type != gjson.String && code.Type != gjson.Number {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(code.String())) {
+	case "", "0", "200", "ok", "success":
+		return false
+	}
+	return strings.TrimSpace(root.Get("message").String()) != ""
+}
+
+// Empty choices are valid only for streaming usage tails, never for a complete
+// buffered response. Keep malformed JSON on the reader's existing parse path.
+func ccBufferedResponseErrorPayload(payload []byte) []byte {
+	if isCCUpstreamErrorPayload(payload) {
+		return payload
+	}
+	choices := gjson.GetBytes(payload, "choices")
+	if gjson.ValidBytes(payload) && (!choices.IsArray() || len(choices.Array()) == 0) {
+		return []byte(`{"error":{"type":"upstream_error","message":"Upstream Chat Completions response has no choices"}}`)
+	}
+	return nil
+}
+
+// Inspect the actual body, since compatible upstreams can mislabel either JSON
+// errors or SSE. Only JSON objects are buffered; SSE must keep streaming.
+func (s *OpenAIGatewayService) readCCStreamJSONError(c *gin.Context, resp *http.Response) ([]byte, error) {
+	originalBody := resp.Body
+	reader := bufio.NewReader(originalBody)
+	prefix := make([]byte, 0, 16)
+	isJSON := false
+	var readErr error
+	// Bound whitespace lookahead so an invalid stream cannot grow this buffer.
+	for len(prefix) < 4096 {
+		var b byte
+		b, readErr = reader.ReadByte()
+		if readErr != nil {
+			break
+		}
+		prefix = append(prefix, b)
+		if b != ' ' && b != '\r' && b != '\n' && b != '\t' {
+			isJSON = b == '{'
+			break
+		}
+	}
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(prefix), reader), originalBody}
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return nil, readErr
+	}
+	if !isJSON {
+		return nil, nil
+	}
+	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	if err != nil {
+		return nil, fmt.Errorf("read upstream JSON stream response: %w", err)
+	}
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	if isCCUpstreamErrorPayload(body) {
+		return body, nil
+	}
+	return nil, nil
+}
+
+// handleCCUpstreamError applies the same conservative error-frame verdict used
+// by the Responses readers. Replay is only possible before client output.
+func (s *OpenAIGatewayService) handleCCUpstreamError(
+	c *gin.Context,
+	resp *http.Response,
+	account *Account,
+	upstreamModel string,
+	payload []byte,
+	outputStarted bool,
+	writeError compatErrorWriter,
+) error {
+	message := extractOpenAISSEErrorMessage(payload)
+	if !outputStarted && account != nil && !IsResponseCommitted(c) && openAIStreamErrorEventShouldFailover(payload, message) {
+		return s.newOpenAIStreamFailoverErrorWithModel(c, account, false, resp.Header.Get("x-request-id"), payload, message, upstreamModel, resp.Header)
+	}
+	if hit, code, cyberMessage := detectOpenAICyberPolicy(payload); hit {
+		MarkOpsCyberPolicy(c, CyberPolicyMark{Code: code, Message: cyberMessage, Body: truncateString(string(payload), 4096), UpstreamStatus: http.StatusOK})
+	} else {
+		s.handleOpenAIStreamTerminalAccountSideEffects(c, account, payload, message, resp.Header, upstreamModel)
+	}
+	message = s.recordOpenAIStreamUpstreamError(c, account, false, resp.Header.Get("x-request-id"), "http_error", payload, message)
+	status := openAIStreamFailedEventSemanticStatus(payload, message)
+	errType := strings.TrimSpace(gjson.GetBytes(payload, "error.type").String())
+	if errType == "" {
+		errType = "api_error"
+	}
+	platform := PlatformOpenAI
+	if account != nil {
+		platform = account.Platform
+	}
+	if matchedStatus, matchedType, matchedMessage, matched := applyOpenAIStreamFailedErrorPassthroughRule(c, platform, payload, message); matched {
+		status, errType = matchedStatus, matchedType
+		if matchedMessage != "" {
+			message = matchedMessage
+		}
+	}
+	writeError(c, status, errType, message)
+	MarkResponseCommitted(c)
+	return fmt.Errorf("upstream response failed: %s", message)
+}
+
+func (s *OpenAIGatewayService) handleCCStreamFailure(
+	c *gin.Context,
+	resp *http.Response,
+	account *Account,
+	upstreamModel string,
+	scan ccStreamScanState,
+	outputStarted bool,
+	writeError compatErrorWriter,
+) error {
+	if len(scan.ErrorPayload) > 0 {
+		return s.handleCCUpstreamError(c, resp, account, upstreamModel, scan.ErrorPayload, outputStarted, writeError)
+	}
+	if !shouldClassifyOpenAIUpstreamStreamReadError(scan.Err, c.Request.Context()) {
+		return fmt.Errorf("stream usage incomplete: %w", scan.Err)
+	}
+	requestID := resp.Header.Get("x-request-id")
+	if !outputStarted {
+		return newOpenAIRawStreamTruncatedFailoverError(c, account, requestID, scan.Err)
+	}
+	recordOpenAIRawStreamTruncation(c, account, requestID, scan.Err, "http_error")
+	_, message := classifyOpenAIUpstreamStreamReadError(scan.Err)
+	writeError(c, http.StatusBadGateway, "upstream_error", message)
+	MarkResponseCommitted(c)
+	return newOpenAIUpstreamStreamReadError(scan.Err)
 }
 
 // logCCStreamMissingDoneSentinel 记录"上游未发 [DONE] 哨兵即结束"的 debug 日志。
@@ -370,6 +547,8 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 	c *gin.Context,
 	resp *http.Response,
 	writeError compatErrorWriter,
+	account *Account,
+	upstreamModel string,
 ) (*apicompat.ChatCompletionsResponse, OpenAIUsage, error) {
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
@@ -377,6 +556,9 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 			writeError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
 		}
 		return nil, OpenAIUsage{}, fmt.Errorf("read upstream body: %w", err)
+	}
+	if payload := ccBufferedResponseErrorPayload(respBody); len(payload) > 0 {
+		return nil, OpenAIUsage{}, s.handleCCUpstreamError(c, resp, account, upstreamModel, payload, false, writeError)
 	}
 
 	var ccResp apicompat.ChatCompletionsResponse

@@ -140,14 +140,15 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		return s.streamChatCompletionsAsResponses(c, resp, account, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
-	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	return s.bufferChatCompletionsAsResponses(c, resp, account, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	c *gin.Context,
 	resp *http.Response,
+	account *Account,
 	originalModel string,
 	customTools map[string]bool,
 	functionTools map[string]bool,
@@ -160,7 +161,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
-	ccResp, usage, err := s.readCCUpstreamJSONResponse(c, resp, writeOpenAIResponsesFallbackError)
+	ccResp, usage, err := s.readCCUpstreamJSONResponse(c, resp, writeOpenAIResponsesFallbackError, account, upstreamModel)
 	if err != nil {
 		return nil, err
 	}
@@ -192,6 +193,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	c *gin.Context,
 	resp *http.Response,
+	account *Account,
 	originalModel string,
 	customTools map[string]bool,
 	functionTools map[string]bool,
@@ -212,12 +214,14 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	state.ToolSearchDeclared = toolSearch
 	state.NamespaceTools = namespaceTools
 	clientDisconnected := false
+	clientOutputStarted := false
 
 	writeEvents := func(events []apicompat.ResponsesStreamEvent) {
 		if clientDisconnected || len(events) == 0 {
 			return
 		}
 		writeStreamHeaders()
+		clientOutputStarted = true
 		for _, event := range events {
 			sse, err := apicompat.ResponsesEventToSSE(event)
 			if err != nil {
@@ -245,7 +249,25 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		writeEvents(events)
 	})
 
-	if scan.Err != nil {
+	if scan.Err != nil || len(scan.ErrorPayload) > 0 {
+		streamErr := s.handleCCStreamFailure(c, resp, account, upstreamModel, scan, clientOutputStarted, func(c *gin.Context, status int, errType, message string) {
+			if !clientOutputStarted {
+				writeOpenAIResponsesFallbackError(c, status, errType, message)
+				return
+			}
+			if clientDisconnected {
+				return
+			}
+			payload, _ := json.Marshal(gin.H{
+				"error":           gin.H{"type": errType, "message": message},
+				"sequence_number": state.SequenceNumber,
+			})
+			_, _ = fmt.Fprint(c.Writer, buildOpenAIResponseFailedSSE(state.ResponseID, state.Model, state.Created, payload, message))
+			c.Writer.Flush()
+		})
+		if !clientOutputStarted {
+			return nil, streamErr
+		}
 		return &OpenAIForwardResult{
 			RequestID:                     requestID,
 			UpstreamHeaders:               resp.Header,
@@ -261,7 +283,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 			Stream:                        true,
 			Duration:                      time.Since(startTime),
 			FirstTokenMs:                  scan.FirstTokenMs,
-		}, fmt.Errorf("stream usage incomplete: %w", scan.Err)
+		}, streamErr
 	}
 	if err := state.ValidateToolCallArguments(); err != nil {
 		return &OpenAIForwardResult{
