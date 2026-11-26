@@ -78,4 +78,12 @@ describe('admin account grok model diagnostics API', () => {
     expect(synced).not.toHaveProperty('grok_model_diagnostics')
     expect(post).toHaveBeenLastCalledWith('/admin/accounts/3/models/sync-upstream')
   })
+
+  it('can enrich capabilities without changing the selected model restriction', async () => {
+    post.mockResolvedValueOnce({ data: { models: ['grok-4.7'] } })
+
+    await syncUpstreamModels(25, { capabilitiesOnly: true })
+
+    expect(post).toHaveBeenCalledWith('/admin/accounts/25/models/sync-upstream?capabilities_only=true')
+  })
 })

@@ -271,6 +271,16 @@ func (r *grokDiagCatalogRepo) UpdateExtra(context.Context, int64, map[string]any
 	return nil
 }
 
+func (r *grokDiagCatalogRepo) UpdateCredentials(_ context.Context, id int64, credentials map[string]any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.account == nil || r.account.ID != id {
+		return service.ErrAccountNotFound
+	}
+	r.account.Credentials = credentials
+	return nil
+}
+
 func (r *grokDiagCatalogRepo) CompareAndSwapGrokObservedModels(_ context.Context, id int64, expected, next json.RawMessage) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

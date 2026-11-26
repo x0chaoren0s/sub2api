@@ -387,7 +387,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await flushPromises()
 
     expect(createAccountMock).toHaveBeenCalledOnce()
-    expect(syncUpstreamModelsMock).toHaveBeenCalledWith(42)
+    expect(syncUpstreamModelsMock).toHaveBeenCalledWith(42, { capabilitiesOnly: true })
   })
 
   it('includes the current concrete model mapping in preview credentials', async () => {
@@ -419,7 +419,7 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(createAccountMock.mock.calls[0]?.[0]?.credentials?.model_mapping).toEqual({
       'public-glm': 'glm-5.3'
     })
-    expect(syncUpstreamModelsMock).toHaveBeenCalledWith(42)
+    expect(syncUpstreamModelsMock).toHaveBeenCalledWith(42, { capabilitiesOnly: true })
   })
 
   it('warns when post-create capability metadata remains incomplete', async () => {

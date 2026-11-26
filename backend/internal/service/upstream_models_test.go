@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -63,11 +64,264 @@ func TestFetchModelsDevMetadataAnthropicOAuthAndSetupToken(t *testing.T) {
 
 type upstreamModelMetadataRepoStub struct {
 	AccountRepository
-	accountID int64
-	updates   map[string]any
-	err       error
-	account   *Account
-	casCalls  int
+	accountID          int64
+	updates            map[string]any
+	err                error
+	account            *Account
+	casCalls           int
+	credentialsUpdates map[string]any
+	credentialsErr     error
+}
+
+func (r *upstreamModelMetadataRepoStub) UpdateCredentials(_ context.Context, id int64, credentials map[string]any) error {
+	r.accountID = id
+	r.credentialsUpdates = shallowCopyMap(credentials)
+	return r.credentialsErr
+}
+
+func TestSyncUpstreamModelCatalogAddsLiveModelsToSchedulingMapping(t *testing.T) {
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(`{"data":[
+			{"id":"GLM-5.3","reasoning":false,"input_modalities":["text"],"context_window":1048576},
+			{"id":"GLM-5.4","reasoning":false,"input_modalities":["text"],"context_window":1048576}
+		]}`)),
+	}}}
+	repo := &upstreamModelMetadataRepoStub{}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	account := &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "key", "base_url": "https://provider.example/v1",
+			"model_mapping": map[string]any{"GLM-5.3": "GLM-5.3", "my-alias": "GLM-5.4"},
+		}}
+	require.False(t, account.IsModelSupported("GLM-5.4"))
+	_, err := svc.SyncUpstreamModelCatalogForScheduling(context.Background(), account)
+	require.NoError(t, err)
+	require.True(t, account.IsModelSupported("GLM-5.4"), "a successfully synced model must become schedulable")
+	require.Equal(t, "GLM-5.4", account.GetMappedModel("my-alias"))
+	require.Equal(t, "key", repo.credentialsUpdates["api_key"])
+	require.Equal(t, "https://provider.example/v1", repo.credentialsUpdates["base_url"])
+	require.Equal(t, map[string]string{
+		"GLM-5.3": "GLM-5.3", "GLM-5.4": "GLM-5.4", "my-alias": "GLM-5.4",
+	}, stringMappingFromRaw(repo.credentialsUpdates["model_mapping"]))
+}
+
+func TestSyncUpstreamModelCatalogRefreshesRestrictionsAndPreservesValidAliases(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		mapping map[string]any
+	}{
+		{"unrestricted", nil},
+		{"empty mapping", map[string]any{}},
+		{"existing remap", map[string]any{"GLM-5.4": "custom-upstream"}},
+		{"wildcard remap", map[string]any{"GLM-*": "custom-upstream"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{responses: []*http.Response{{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(`{"data":[
+					{"id":"GLM-5.4","reasoning":false,"input_modalities":["text"],"context_window":1048576},
+					{"id":"custom-upstream","reasoning":false,"input_modalities":["text"],"context_window":1048576}
+				]}`)),
+			}}}
+			repo := &upstreamModelMetadataRepoStub{}
+			svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+			account := &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1", "model_mapping": tt.mapping}}
+			_, err := svc.SyncUpstreamModelCatalogForScheduling(context.Background(), account)
+			require.NoError(t, err)
+			require.True(t, account.IsModelSupported("GLM-5.4"))
+			if len(tt.mapping) == 0 {
+				require.False(t, account.IsModelSupported("another-model"))
+				require.Equal(t, map[string]string{
+					"GLM-5.4": "GLM-5.4", "custom-upstream": "custom-upstream",
+				}, stringMappingFromRaw(repo.credentialsUpdates["model_mapping"]))
+			} else {
+				require.Equal(t, "custom-upstream", account.GetMappedModel("GLM-5.4"))
+			}
+		})
+	}
+}
+
+func TestSyncUpstreamModelCatalogForSchedulingRemovesRetiredModelsOnEveryRefresh(t *testing.T) {
+	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformDeepseek} {
+		t.Run(platform, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{responses: []*http.Response{
+				{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":[
+					{"id":"kept","reasoning":false,"input_modalities":["text"],"context_window":128000},
+					{"id":"new","reasoning":false,"input_modalities":["text"],"context_window":256000}
+				]}`))},
+				{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":[
+					{"id":"newer","reasoning":false,"input_modalities":["text"],"context_window":512000}
+				]}`))},
+			}}
+			repo := &upstreamModelMetadataRepoStub{}
+			svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+			account := &Account{ID: 7, Platform: platform, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"api_key": "key", "base_url": "https://provider.example/v1",
+					"model_mapping": map[string]any{
+						"retired": "retired", "retired-alias": "retired", "retired-*": "retired",
+						"kept": "kept", "valid-alias": "kept",
+					},
+				}}
+			account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{
+				Models: map[string]UpstreamModelMetadata{"retired": {ID: "retired", ContextWindow: 64000}},
+			})
+
+			first, err := svc.SyncUpstreamModelCatalogForScheduling(context.Background(), account)
+			require.NoError(t, err)
+			require.Equal(t, []string{"kept", "new"}, first.Models)
+			require.Equal(t, map[string]string{"kept": "kept", "new": "new", "valid-alias": "kept"},
+				stringMappingFromRaw(repo.credentialsUpdates["model_mapping"]))
+			require.NotContains(t, first.Metadata, "retired")
+			require.NotContains(t, account.GetUpstreamModelMetadataSnapshot().Models, "retired")
+			require.Equal(t, "key", account.Credentials["api_key"])
+
+			second, err := svc.SyncUpstreamModelCatalogForScheduling(context.Background(), account)
+			require.NoError(t, err)
+			require.Equal(t, []string{"newer"}, second.Models)
+			require.Equal(t, map[string]string{"newer": "newer"}, stringMappingFromRaw(account.Credentials["model_mapping"]))
+			require.Len(t, account.GetUpstreamModelMetadataSnapshot().Models, 1)
+			require.Len(t, upstream.requests, 2, "each refresh must request a fresh upstream catalog")
+			require.Equal(t, "no-cache", upstream.requests[1].Header.Get("Cache-Control"))
+		})
+	}
+}
+
+func TestSyncUpstreamModelCatalogForSchedulingPrunesSnapshotWhenCapabilitiesUnavailable(t *testing.T) {
+	for _, retainListed := range []bool{false, true} {
+		t.Run(strconv.FormatBool(retainListed), func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{responses: []*http.Response{
+				{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"listed"}]}`))},
+				{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(`{}`))},
+			}}
+			repo := &upstreamModelMetadataRepoStub{}
+			svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+			account := &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1",
+					"model_mapping": map[string]any{"retired": "retired"}}}
+			old := map[string]UpstreamModelMetadata{"retired": {ID: "retired", ContextWindow: 64000}}
+			if retainListed {
+				old["listed"] = UpstreamModelMetadata{ID: "listed", ContextWindow: 128000}
+			}
+			account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{Models: old})
+			catalog, err := svc.SyncUpstreamModelCatalogForScheduling(context.Background(), account)
+			require.NoError(t, err)
+			require.NotEmpty(t, catalog.Warnings)
+			require.Equal(t, map[string]string{"listed": "listed"}, stringMappingFromRaw(account.Credentials["model_mapping"]))
+			require.NotNil(t, repo.updates, "retired capability entries must be cleared even when new metadata is unavailable")
+			body, err := json.Marshal(repo.updates[UpstreamModelMetadataExtraKey])
+			require.NoError(t, err)
+			var snapshot UpstreamModelMetadataSnapshot
+			require.NoError(t, json.Unmarshal(body, &snapshot))
+			require.NotContains(t, snapshot.Models, "retired")
+			if retainListed {
+				require.Equal(t, int64(128000), snapshot.Models["listed"].ContextWindow)
+			} else {
+				require.Empty(t, snapshot.Models)
+			}
+		})
+	}
+}
+
+func TestSyncUpstreamModelCatalogForSchedulingRejectsUnavailableOrStaleLists(t *testing.T) {
+	for _, tt := range []struct {
+		name, body, source string
+		status             int
+	}{
+		{"auth failure", `{}`, "", http.StatusForbidden},
+		{"upstream failure", `{}`, "", http.StatusBadGateway},
+		{"empty catalog", `{"data":[]}`, "", http.StatusOK},
+		{"invalid catalog", `invalid`, "", http.StatusOK},
+		{"snapshot fallback", `{"data":[{"id":"stale"}]}`, "snapshot", http.StatusOK},
+		{"builtin fallback", `{"data":[{"id":"stale"}]}`, "builtin", http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{responses: []*http.Response{
+				{StatusCode: tt.status, Header: http.Header{"X-Model-Catalog-Source": []string{tt.source}},
+					Body: io.NopCloser(strings.NewReader(tt.body))},
+				{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(`{}`))},
+			}}
+			repo := &upstreamModelMetadataRepoStub{}
+			svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+			account := &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1",
+					"model_mapping": map[string]any{"kept": "kept"}}}
+			account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{
+				Models: map[string]UpstreamModelMetadata{"kept": {ID: "kept", ContextWindow: 128000}},
+			})
+			_, err := svc.SyncUpstreamModelCatalogForScheduling(context.Background(), account)
+			require.Error(t, err)
+			require.Nil(t, repo.credentialsUpdates)
+			require.Nil(t, repo.updates)
+			require.Equal(t, map[string]string{"kept": "kept"}, stringMappingFromRaw(account.Credentials["model_mapping"]))
+			require.Contains(t, account.GetUpstreamModelMetadataSnapshot().Models, "kept")
+		})
+	}
+}
+
+func TestSyncUpstreamModelCatalogSavesSchedulingIDsWithoutCompleteCapabilities(t *testing.T) {
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"GLM-5.4"}]}`))},
+		{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(`{"error":"unavailable"}`))},
+	}}
+	repo := &upstreamModelMetadataRepoStub{}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	account := &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "key", "base_url": "https://provider.example/v1",
+			"model_mapping": map[string]any{"GLM-5.3": "GLM-5.3"},
+		}}
+	catalog, err := svc.SyncUpstreamModelCatalogForScheduling(context.Background(), account)
+	require.NoError(t, err)
+	require.NotEmpty(t, catalog.Warnings)
+	require.True(t, account.IsModelSupported("GLM-5.4"), "missing capabilities must not prevent model-ID sync")
+	require.Equal(t, "GLM-5.4", stringMappingFromRaw(repo.credentialsUpdates["model_mapping"])["GLM-5.4"])
+}
+
+func TestSyncUpstreamModelCatalogReportsSchedulingMappingPersistenceFailure(t *testing.T) {
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(`{"data":[
+			{"id":"GLM-5.3","reasoning":false,"input_modalities":["text"],"context_window":1048576},
+			{"id":"GLM-5.4","reasoning":false,"input_modalities":["text"],"context_window":1048576}
+		]}`)),
+	}}}
+	repo := &upstreamModelMetadataRepoStub{credentialsErr: errors.New("database unavailable")}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	_, err := svc.SyncUpstreamModelCatalogForScheduling(context.Background(), &Account{
+		ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "key", "base_url": "https://provider.example/v1",
+			"model_mapping": map[string]any{"GLM-5.3": "GLM-5.3"},
+		}})
+	require.Error(t, err)
+	var syncErr *UpstreamModelSyncError
+	require.ErrorAs(t, err, &syncErr)
+	require.Equal(t, UpstreamModelSyncErrorInternal, syncErr.Kind)
+}
+
+func TestSyncUpstreamModelCatalogCapabilitiesOnlyPreservesManualRestrictions(t *testing.T) {
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{{
+		StatusCode: http.StatusOK,
+		Body: io.NopCloser(strings.NewReader(`{"data":[
+			{"id":"GLM-5.3","reasoning":false,"input_modalities":["text"],"context_window":1048576},
+			{"id":"GLM-5.4","reasoning":false,"input_modalities":["text"],"context_window":1048576}
+		]}`)),
+	}}}
+	repo := &upstreamModelMetadataRepoStub{}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: upstreamModelSyncTestConfig()}
+	account := &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "key", "base_url": "https://provider.example/v1",
+			"model_mapping": map[string]any{"GLM-5.3": "GLM-5.3"},
+		}}
+	_, err := svc.SyncUpstreamModelCatalog(context.Background(), account)
+	require.NoError(t, err)
+	require.NotNil(t, repo.updates)
+	require.False(t, account.IsModelSupported("GLM-5.4"), "automatic post-create capability enrichment must preserve the selected whitelist")
+	require.Nil(t, repo.credentialsUpdates)
 }
 
 func TestSyncUpstreamModelCatalogPersistsCreditMultiplierWithoutInventingCapabilities(t *testing.T) {
@@ -717,7 +971,7 @@ func TestSyncUpstreamModelCatalogUsesConfiguredModelsWhenListEndpointUnsupported
 	account.SetUpstreamModelMetadataSnapshot(UpstreamModelMetadataSnapshot{Models: map[string]UpstreamModelMetadata{
 		"old-live-model": {ID: "old-live-model", ContextWindow: 256000},
 	}})
-	catalog, err := svc.SyncUpstreamModelCatalog(context.Background(), account)
+	catalog, err := svc.SyncUpstreamModelCatalogForScheduling(context.Background(), account)
 	require.NoError(t, err)
 	require.Contains(t, account.GetUpstreamModelMetadataSnapshot().Models, "old-live-model", "an unavailable model-list endpoint is not evidence of removal")
 	require.Equal(t, []string{"glm-5.3"}, catalog.Models)
@@ -730,6 +984,7 @@ func TestSyncUpstreamModelCatalogUsesConfiguredModelsWhenListEndpointUnsupported
 	require.Equal(t, []string{"text"}, metadata.InputModalities)
 	require.Equal(t, int64(1_000_000), metadata.ContextWindow)
 	require.NotNil(t, repo.updates)
+	require.Nil(t, repo.credentialsUpdates, "a configured-model fallback must not broaden scheduling rules")
 }
 
 func TestSyncUpstreamModelCatalogDoesNotUseConfiguredModelsForRealUpstreamFailures(t *testing.T) {

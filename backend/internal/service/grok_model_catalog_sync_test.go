@@ -281,7 +281,7 @@ func TestGrokCatalogSyncPreviewAndPureReadDoNotPersist(t *testing.T) {
 	require.Equal(t, before+2, len(readUpstream.requests))
 }
 
-func TestGrokCatalogSyncNonGrokOmitsDiscoverySource(t *testing.T) {
+func TestGrokCatalogSyncNonGrokIncludesDiscoverySource(t *testing.T) {
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -299,8 +299,8 @@ func TestGrokCatalogSyncNonGrokOmitsDiscoverySource(t *testing.T) {
 		Credentials: map[string]any{"api_key": "key", "base_url": "https://provider.example/v1"},
 	})
 	require.NoError(t, err)
-	require.Empty(t, catalog.DiscoverySource)
-	require.NotContains(t, grokCatalogJSON(t, catalog), "discovery_source")
+	require.Equal(t, "upstream", catalog.DiscoverySource)
+	require.Contains(t, grokCatalogJSON(t, catalog), `"discovery_source":"upstream"`)
 	require.Zero(t, repo.casCalls)
 }
 

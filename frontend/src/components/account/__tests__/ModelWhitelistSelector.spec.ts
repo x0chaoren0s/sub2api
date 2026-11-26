@@ -388,7 +388,7 @@ describe('ModelWhitelistSelector', () => {
     expect(wrapper.emitted('upstream-sync-finished')).toHaveLength(1)
   })
 
-  it('still appends a real catalog when capability metadata is incomplete', async () => {
+  it('replaces retired IDs even when capability metadata is incomplete', async () => {
     syncUpstreamModels.mockResolvedValue({
       models: ['grok-4.7'],
       discovery_source: 'upstream',
@@ -398,11 +398,37 @@ describe('ModelWhitelistSelector', () => {
     const button = wrapper.findAll('button').find(b => b.text() === 'admin.accounts.syncUpstreamModels')!
     await button.trigger('click')
     await flushPromises()
-    expect(wrapper.emitted('update:modelValue')).toEqual([[['grok-4', 'grok-4.7']]])
+    expect(wrapper.emitted('update:modelValue')).toEqual([[['grok-4.7']]])
     expect(showWarning).toHaveBeenCalledWith('admin.accounts.syncUpstreamModelsMetadataIncomplete')
     expect(showSuccess).not.toHaveBeenCalled()
     expect(wrapper.emitted('upstream-sync-finished')).toHaveLength(1)
     expect(wrapper.emitted('upstream-synced')).toBeUndefined()
+  })
+
+  it('uses reconciled scheduling rules and removes aliases to retired targets', async () => {
+    syncUpstreamModels.mockResolvedValue({
+      models: ['kept', 'new'],
+      model_mapping: { kept: 'kept', new: 'new', friendly: 'kept' }
+    })
+    const wrapper = mountSelector({
+      accountId: 46,
+      modelValue: ['retired', 'kept'],
+      modelMappings: [{ from: 'old-alias', to: 'retired' }, { from: 'friendly', to: 'kept' }]
+    })
+    await syncButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('update:modelValue')).toEqual([[['kept', 'new']]])
+    expect(wrapper.emitted('update:modelMappings')).toEqual([[[{ from: 'friendly', to: 'kept' }]]])
+    expect(showSuccess).toHaveBeenCalledWith('admin.accounts.syncUpstreamModelsSuccess')
+  })
+
+  it('reports success when refresh only removes models', async () => {
+    syncUpstreamModels.mockResolvedValue({ models: ['kept'] })
+    const wrapper = mountSelector({ accountId: 46, modelValue: ['retired', 'kept'] })
+    await syncButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('update:modelValue')).toEqual([[['kept']]])
+    expect(showSuccess).toHaveBeenCalledWith('admin.accounts.syncUpstreamModelsSuccess')
   })
 
   it('keeps appending models when a non-grok sync omits discovery fields', async () => {
@@ -536,7 +562,7 @@ describe('ModelWhitelistSelector', () => {
     await secondSync
     await flushPromises()
     expect(wrapper.vm.isSyncingUpstream).toBe(false)
-    expect(wrapper.emitted('update:modelValue')).toEqual([[['b-local', 'b-catalog']]])
+    expect(wrapper.emitted('update:modelValue')).toEqual([[['b-catalog']]])
     expect(wrapper.emitted('upstream-sync-finished')).toEqual([[]])
     expect(showSuccess).toHaveBeenCalledTimes(1)
     wrapper.unmount()
@@ -585,7 +611,7 @@ describe('ModelWhitelistSelector', () => {
 
     second.resolve({ models: ['b-catalog'], discovery_source: 'upstream' })
     await flushPromises()
-    expect(wrapper.emitted('update:modelValue')).toEqual([[['b-local', 'b-catalog']]])
+    expect(wrapper.emitted('update:modelValue')).toEqual([[['b-catalog']]])
     expect(showSuccess).toHaveBeenCalledTimes(1)
     expect(wrapper.emitted('upstream-sync-finished')).toHaveLength(1)
     expect((syncButton(wrapper).element as HTMLButtonElement).disabled).toBe(false)
